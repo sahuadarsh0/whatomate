@@ -6,7 +6,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 
 <template>
   <TooltipProvider>
-    <div class="min-h-screen bg-background">
+    <div class="min-h-screen bg-background font-sans antialiased">
       <RouterView />
       <Toaster position="top-right" richColors />
     </div>

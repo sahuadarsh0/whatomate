@@ -90,7 +90,7 @@ const accounts = ref<WhatsAppAccount[]>([])
 const isLoading = ref(true)
 const isSyncing = ref(false)
 const searchQuery = ref('')
-const selectedAccount = ref<string>('')
+const selectedAccount = ref<string>(localStorage.getItem('templates_selected_account') || 'all')
 
 // Dialog state
 const isDialogOpen = ref(false)
@@ -144,25 +144,33 @@ const headerTypes = [
 ]
 
 onMounted(async () => {
-  await Promise.all([fetchAccounts(), fetchTemplates()])
+  await fetchAccounts()
+  await fetchTemplates()
 })
 
 async function fetchAccounts() {
   try {
     const response = await api.get('/accounts')
     accounts.value = response.data.data?.accounts || []
-    if (accounts.value.length > 0 && !selectedAccount.value) {
-      selectedAccount.value = accounts.value[0].name
+    // Validate stored account still exists, fallback to 'all' if not
+    if (selectedAccount.value !== 'all' && !accounts.value.some(a => a.name === selectedAccount.value)) {
+      selectedAccount.value = 'all'
+      localStorage.setItem('templates_selected_account', 'all')
     }
   } catch (error) {
     console.error('Failed to fetch accounts:', error)
   }
 }
 
+function onAccountChange(value: string) {
+  localStorage.setItem('templates_selected_account', value)
+  fetchTemplates()
+}
+
 async function fetchTemplates() {
   isLoading.value = true
   try {
-    const params = selectedAccount.value ? `?account=${selectedAccount.value}` : ''
+    const params = selectedAccount.value && selectedAccount.value !== 'all' ? `?account=${selectedAccount.value}` : ''
     const response = await api.get(`/templates${params}`)
     templates.value = response.data.data?.templates || []
   } catch (error: any) {
@@ -175,7 +183,7 @@ async function fetchTemplates() {
 }
 
 async function syncTemplates() {
-  if (!selectedAccount.value) {
+  if (!selectedAccount.value || selectedAccount.value === 'all') {
     toast.error('Please select a WhatsApp account first')
     return
   }
@@ -198,7 +206,7 @@ async function syncTemplates() {
 function openCreateDialog() {
   editingTemplate.value = null
   formData.value = {
-    whatsapp_account: selectedAccount.value || (accounts.value[0]?.name || ''),
+    whatsapp_account: (selectedAccount.value && selectedAccount.value !== 'all') ? selectedAccount.value : (accounts.value[0]?.name || ''),
     name: '',
     display_name: '',
     language: 'en',
@@ -450,7 +458,7 @@ function formatPreview(text: string, samples: any[]): string {
           <p class="text-sm text-muted-foreground">Create and manage WhatsApp message templates</p>
         </div>
         <div class="flex items-center gap-2">
-          <Button variant="outline" @click="syncTemplates" :disabled="isSyncing || !selectedAccount">
+          <Button variant="outline" @click="syncTemplates" :disabled="isSyncing || !selectedAccount || selectedAccount === 'all'">
             <Loader2 v-if="isSyncing" class="h-4 w-4 mr-2 animate-spin" />
             <RefreshCw v-else class="h-4 w-4 mr-2" />
             Sync from Meta
@@ -467,12 +475,12 @@ function formatPreview(text: string, samples: any[]): string {
     <div class="p-4 border-b flex items-center gap-4 flex-wrap">
       <div class="flex items-center gap-2">
         <Label class="text-sm text-muted-foreground">Account:</Label>
-        <Select v-model="selectedAccount" @update:model-value="fetchTemplates">
+        <Select v-model="selectedAccount" @update:model-value="onAccountChange">
           <SelectTrigger class="w-[180px]">
             <SelectValue placeholder="All Accounts" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">All Accounts</SelectItem>
+            <SelectItem value="all">All Accounts</SelectItem>
             <SelectItem v-for="account in accounts" :key="account.id" :value="account.name">
               {{ account.name }}
             </SelectItem>
@@ -575,7 +583,7 @@ function formatPreview(text: string, samples: any[]): string {
             <p class="text-lg font-medium">No templates found</p>
             <p class="text-sm mb-4">Create a new template or sync from Meta.</p>
             <div class="flex items-center justify-center gap-2">
-              <Button variant="outline" @click="syncTemplates" :disabled="!selectedAccount">
+              <Button variant="outline" @click="syncTemplates" :disabled="!selectedAccount || selectedAccount === 'all'">
                 <RefreshCw class="h-4 w-4 mr-2" />
                 Sync from Meta
               </Button>
