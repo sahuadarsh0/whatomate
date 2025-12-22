@@ -439,10 +439,13 @@ $: filteredRules.value = searchQuery.value
                       {{ keyword }}
                     </Badge>
                   </div>
-                  <Badge v-if="rule.response_type === 'transfer'" variant="destructive">
+                  <Badge v-if="rule.response_type === 'transfer'" variant="outline" class="border-destructive text-destructive">
                     Transfer
                   </Badge>
-                  <Badge :variant="rule.enabled ? 'default' : 'outline'">
+                  <Badge
+                    variant="outline"
+                    :class="rule.enabled ? 'border-green-600 text-green-600' : ''"
+                  >
                     {{ rule.enabled ? 'Active' : 'Inactive' }}
                   </Badge>
                 </div>

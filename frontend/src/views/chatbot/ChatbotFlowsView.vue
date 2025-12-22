@@ -1041,7 +1041,10 @@ function removeButton(step: FlowStep, index: number) {
                 </div>
                 <div>
                   <CardTitle class="text-base">{{ flow.name }}</CardTitle>
-                  <Badge :variant="flow.enabled ? 'default' : 'secondary'" class="mt-1">
+                  <Badge
+                    variant="outline"
+                    :class="flow.enabled ? 'border-green-600 text-green-600 mt-1' : 'mt-1'"
+                  >
                     {{ flow.enabled ? 'Active' : 'Inactive' }}
                   </Badge>
                 </div>

@@ -442,7 +442,13 @@ onMounted(() => {
                     </div>
                     <p class="text-sm text-muted-foreground truncate">{{ message.content }}</p>
                     <div class="flex items-center gap-2 mt-1">
-                      <Badge :variant="message.direction === 'incoming' ? 'secondary' : 'default'" class="text-xs">
+                      <Badge
+                        variant="outline"
+                        :class="[
+                          'text-xs',
+                          message.direction === 'incoming' ? 'border-green-600 text-green-600' : 'border-blue-600 text-blue-600'
+                        ]"
+                      >
                         {{ message.direction }}
                       </Badge>
                       <span v-if="message.status === 'delivered'" class="text-xs text-muted-foreground flex items-center">
