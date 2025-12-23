@@ -35,14 +35,18 @@ func Handler(basePath string) fasthttp.RequestHandler {
 		panic("failed to read index.html: " + err.Error())
 	}
 
-	// Inject base tag and base path script before </head>
+	// Inject base tag right after <head> so it's processed before any relative URLs
 	// Base tag ensures relative URLs (./assets/...) resolve from basePath, not current page path
 	baseHref := basePath + "/"
 	if basePath == "" {
 		baseHref = "/"
 	}
-	injection := fmt.Sprintf(`<base href="%s"><script>window.__BASE_PATH__ = "%s";</script></head>`, baseHref, basePath)
-	cachedIndexHTML = []byte(strings.Replace(string(indexContent), "</head>", injection, 1))
+	baseTag := fmt.Sprintf(`<head><base href="%s">`, baseHref)
+	modifiedHTML := strings.Replace(string(indexContent), "<head>", baseTag, 1)
+
+	// Inject base path script before </head>
+	basePathScript := fmt.Sprintf(`<script>window.__BASE_PATH__ = "%s";</script></head>`, basePath)
+	cachedIndexHTML = []byte(strings.Replace(modifiedHTML, "</head>", basePathScript, 1))
 
 	// Create file server
 	fileServer := http.FileServer(http.FS(distSubFS))
