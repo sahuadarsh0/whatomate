@@ -409,6 +409,16 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.PUT("/api/chatbot/transfers/{id}/resume", app.ResumeFromTransfer)
 	g.PUT("/api/chatbot/transfers/{id}/assign", app.AssignAgentTransfer)
 
+	// Teams (admin/manager - access control in handler)
+	g.GET("/api/teams", app.ListTeams)
+	g.POST("/api/teams", app.CreateTeam)
+	g.GET("/api/teams/{id}", app.GetTeam)
+	g.PUT("/api/teams/{id}", app.UpdateTeam)
+	g.DELETE("/api/teams/{id}", app.DeleteTeam)
+	g.GET("/api/teams/{id}/members", app.ListTeamMembers)
+	g.POST("/api/teams/{id}/members", app.AddTeamMember)
+	g.DELETE("/api/teams/{id}/members/{user_id}", app.RemoveTeamMember)
+
 	// Canned Responses
 	g.GET("/api/canned-responses", app.ListCannedResponses)
 	g.POST("/api/canned-responses", app.CreateCannedResponse)

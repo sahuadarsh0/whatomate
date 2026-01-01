@@ -48,7 +48,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb'
-import { chatbotService, flowsService } from '@/services/api'
+import { chatbotService, flowsService, teamsService, type Team } from '@/services/api'
 import { toast } from 'vue-sonner'
 import { Plus, Pencil, Trash2, Workflow, ArrowLeft, Play, Pause, GripVertical, ChevronDown, ChevronUp } from 'lucide-vue-next'
 import draggable from 'vuedraggable'
@@ -67,6 +67,11 @@ interface ButtonConfig {
   title: string
 }
 
+interface TransferConfig {
+  team_id: string
+  notes: string
+}
+
 interface FlowStep {
   id?: string
   step_name: string
@@ -77,6 +82,7 @@ interface FlowStep {
   input_config: Record<string, any>
   api_config: ApiConfig
   buttons: ButtonConfig[]
+  transfer_config: TransferConfig
   validation_regex: string
   validation_error: string
   store_as: string
@@ -117,6 +123,7 @@ interface WhatsAppFlow {
 
 const flows = ref<ChatbotFlow[]>([])
 const whatsappFlows = ref<WhatsAppFlow[]>([])
+const teams = ref<Team[]>([])
 const isLoading = ref(true)
 const isDialogOpen = ref(false)
 const isSubmitting = ref(false)
@@ -153,6 +160,11 @@ const defaultApiConfig: ApiConfig = {
   fallback_message: ''
 }
 
+const defaultTransferConfig: TransferConfig = {
+  team_id: '_general',
+  notes: ''
+}
+
 const defaultStep: FlowStep = {
   step_name: '',
   step_order: 0,
@@ -162,6 +174,7 @@ const defaultStep: FlowStep = {
   input_config: {},
   api_config: { ...defaultApiConfig },
   buttons: [],
+  transfer_config: { ...defaultTransferConfig },
   validation_regex: '',
   validation_error: 'Invalid input. Please try again.',
   store_as: '',
@@ -172,7 +185,7 @@ const defaultStep: FlowStep = {
 }
 
 onMounted(async () => {
-  await Promise.all([fetchFlows(), fetchWhatsAppFlows()])
+  await Promise.all([fetchFlows(), fetchWhatsAppFlows(), fetchTeams()])
 })
 
 async function fetchFlows() {
@@ -201,6 +214,17 @@ async function fetchWhatsAppFlows() {
   } catch (error) {
     console.error('Failed to load WhatsApp flows:', error)
     whatsappFlows.value = []
+  }
+}
+
+async function fetchTeams() {
+  try {
+    const response = await teamsService.list()
+    const data = response.data.data || response.data
+    teams.value = (data.teams || []).filter((t: Team) => t.is_active)
+  } catch (error) {
+    console.error('Failed to load teams:', error)
+    teams.value = []
   }
 }
 
@@ -253,6 +277,12 @@ async function openEditDialog(flow: ChatbotFlow) {
           headers: (s.api_config || s.ApiConfig || {}).headers || {}
         },
         buttons: s.buttons || s.Buttons || [],
+        transfer_config: {
+          ...defaultTransferConfig,
+          ...(s.transfer_config || s.TransferConfig || {}),
+          // Ensure team_id is never empty string (use _general for general queue)
+          team_id: (s.transfer_config || s.TransferConfig || {}).team_id || '_general'
+        },
         validation_regex: s.validation_regex || s.ValidationRegex || '',
         validation_error: s.validation_error || s.ValidationError || 'Invalid input. Please try again.',
         store_as: s.store_as || s.StoreAs || '',
@@ -453,7 +483,8 @@ const messageTypes = [
   { value: 'text', label: 'Static Text' },
   { value: 'buttons', label: 'Text with Buttons' },
   { value: 'api_fetch', label: 'Fetch from API' },
-  { value: 'whatsapp_flow', label: 'WhatsApp Flow' }
+  { value: 'whatsapp_flow', label: 'WhatsApp Flow' },
+  { value: 'transfer', label: 'Transfer to Agent/Team' }
 ]
 
 const httpMethods = ['GET', 'POST', 'PUT', 'PATCH']
@@ -934,7 +965,60 @@ function removeButton(step: FlowStep, index: number) {
                           </div>
                         </div>
 
-                        <div class="grid grid-cols-2 gap-4">
+                        <!-- Transfer Configuration -->
+                        <div v-if="step.message_type === 'transfer'" class="space-y-4 p-4 border rounded-lg bg-muted/10">
+                          <div class="flex items-center gap-2 mb-2">
+                            <Badge variant="outline">Transfer to Agent/Team</Badge>
+                          </div>
+
+                          <div class="space-y-2">
+                            <Label>Transfer Message (optional)</Label>
+                            <Textarea
+                              v-model="step.message"
+                              placeholder="Connecting you to our support team..."
+                              :rows="2"
+                            />
+                            <p class="text-xs text-muted-foreground">
+                              Message sent to user before transferring. Use {{variable}} for dynamic values.
+                            </p>
+                          </div>
+
+                          <div class="space-y-2">
+                            <Label>Assign to Team</Label>
+                            <Select v-model="step.transfer_config.team_id">
+                              <SelectTrigger>
+                                <SelectValue :placeholder="teams.length === 0 ? 'No teams available' : 'Select a team'" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="_general">General Queue (No Team)</SelectItem>
+                                <SelectItem v-for="team in teams" :key="team.id" :value="team.id">
+                                  {{ team.name }}
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <p class="text-xs text-muted-foreground">
+                              Select a team to route this transfer, or use general queue.
+                            </p>
+                          </div>
+
+                          <div class="space-y-2">
+                            <Label>Transfer Notes (optional)</Label>
+                            <Input
+                              v-model="step.transfer_config.notes"
+                              placeholder="From flow: {{flow_name}}"
+                            />
+                            <p class="text-xs text-muted-foreground">
+                              Internal notes for agents. Use {{variable}} for dynamic values.
+                            </p>
+                          </div>
+
+                          <p class="text-xs text-muted-foreground border-t pt-2">
+                            This step will end the flow and transfer the conversation to the selected team or general queue.
+                            The team's assignment strategy (round-robin, load-balanced, or manual) will be applied.
+                          </p>
+                        </div>
+
+                        <div v-if="step.message_type !== 'transfer'" class="grid grid-cols-2 gap-4">
                           <div class="space-y-2">
                             <Label>Expected Input Type</Label>
                             <Select v-model="step.input_type">
@@ -954,59 +1038,61 @@ function removeButton(step: FlowStep, index: number) {
                           </div>
                         </div>
 
-                        <div v-if="step.input_type === 'select'" class="space-y-2">
-                          <Label>Button Options (one per line)</Label>
-                          <Textarea
-                            :model-value="(step.input_config.options || []).join('\n')"
-                            @update:model-value="step.input_config = { ...step.input_config, options: ($event as string).split('\n').filter(Boolean) }"
-                            placeholder="Option 1&#10;Option 2&#10;Option 3"
-                            :rows="3"
-                          />
-                        </div>
-
-                        <div class="space-y-2">
-                          <Label>Validation Error Message</Label>
-                          <Input v-model="step.validation_error" placeholder="Invalid input. Please try again." />
-                        </div>
-
-                        <div class="flex items-center gap-4">
-                          <div class="flex items-center gap-2">
-                            <Switch
-                              :id="`retry-${index}`"
-                              :checked="step.retry_on_invalid"
-                              @update:checked="step.retry_on_invalid = $event"
+                        <template v-if="step.message_type !== 'transfer'">
+                          <div v-if="step.input_type === 'select'" class="space-y-2">
+                            <Label>Button Options (one per line)</Label>
+                            <Textarea
+                              :model-value="(step.input_config.options || []).join('\n')"
+                              @update:model-value="step.input_config = { ...step.input_config, options: ($event as string).split('\n').filter(Boolean) }"
+                              placeholder="Option 1&#10;Option 2&#10;Option 3"
+                              :rows="3"
                             />
-                            <Label :for="`retry-${index}`">Retry on invalid input</Label>
                           </div>
-                          <div v-if="step.retry_on_invalid" class="flex items-center gap-2">
-                            <Label>Max retries:</Label>
+
+                          <div class="space-y-2">
+                            <Label>Validation Error Message</Label>
+                            <Input v-model="step.validation_error" placeholder="Invalid input. Please try again." />
+                          </div>
+
+                          <div class="flex items-center gap-4">
+                            <div class="flex items-center gap-2">
+                              <Switch
+                                :id="`retry-${index}`"
+                                :checked="step.retry_on_invalid"
+                                @update:checked="step.retry_on_invalid = $event"
+                              />
+                              <Label :for="`retry-${index}`">Retry on invalid input</Label>
+                            </div>
+                            <div v-if="step.retry_on_invalid" class="flex items-center gap-2">
+                              <Label>Max retries:</Label>
+                              <Input
+                                v-model.number="step.max_retries"
+                                type="number"
+                                min="1"
+                                max="10"
+                                class="w-20"
+                              />
+                            </div>
+                          </div>
+
+                          <!-- Skip Condition -->
+                          <div class="space-y-2 pt-2 border-t">
+                            <Label>Skip Condition (optional)</Label>
                             <Input
-                              v-model.number="step.max_retries"
-                              type="number"
-                              min="1"
-                              max="10"
-                              class="w-20"
+                              v-model="step.skip_condition"
+                              placeholder="e.g., phone != '' AND email != ''"
                             />
+                            <p class="text-xs text-muted-foreground">
+                              Skip this step if condition is true. Use variables from previous steps.
+                              <br />
+                              Examples: <code class="text-xs bg-muted px-1 rounded">phone != ''</code>,
+                              <code class="text-xs bg-muted px-1 rounded">name != '' AND phone != ''</code>,
+                              <code class="text-xs bg-muted px-1 rounded">status == 'vip' OR amount > 1000</code>
+                              <br />
+                              For buttons: use <code class="text-xs bg-muted px-1 rounded">var_title</code> for button text, <code class="text-xs bg-muted px-1 rounded">var</code> for button ID.
+                            </p>
                           </div>
-                        </div>
-
-                        <!-- Skip Condition -->
-                        <div class="space-y-2 pt-2 border-t">
-                          <Label>Skip Condition (optional)</Label>
-                          <Input
-                            v-model="step.skip_condition"
-                            placeholder="e.g., phone != '' AND email != ''"
-                          />
-                          <p class="text-xs text-muted-foreground">
-                            Skip this step if condition is true. Use variables from previous steps.
-                            <br />
-                            Examples: <code class="text-xs bg-muted px-1 rounded">phone != ''</code>,
-                            <code class="text-xs bg-muted px-1 rounded">name != '' AND phone != ''</code>,
-                            <code class="text-xs bg-muted px-1 rounded">status == 'vip' OR amount > 1000</code>
-                            <br />
-                            For buttons: use <code class="text-xs bg-muted px-1 rounded">var_title</code> for button text, <code class="text-xs bg-muted px-1 rounded">var</code> for button ID.
-                          </p>
-                        </div>
+                        </template>
                       </div>
                     </div>
                   </template>

@@ -34,7 +34,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { chatbotService, usersService } from '@/services/api'
+import { chatbotService, usersService, teamsService, type Team } from '@/services/api'
 import { useTransfersStore, type AgentTransfer } from '@/stores/transfers'
 import { useAuthStore } from '@/stores/auth'
 import { toast } from 'vue-sonner'
@@ -63,6 +63,8 @@ const assignDialogOpen = ref(false)
 const transferToAssign = ref<AgentTransfer | null>(null)
 const selectedAgentId = ref<string>('')
 const agents = ref<{ id: string; full_name: string }[]>([])
+const teams = ref<Team[]>([])
+const selectedTeamFilter = ref<string>('all')
 
 const userRole = computed(() => authStore.user?.role)
 const isAdminOrManager = computed(() => userRole.value === 'admin' || userRole.value === 'manager')
@@ -74,11 +76,33 @@ const myTransfers = computed(() =>
   )
 )
 
-const queueTransfers = computed(() =>
-  transfersStore.transfers.filter(t =>
+const queueTransfers = computed(() => {
+  let transfers = transfersStore.transfers.filter(t =>
     t.status === 'active' && !t.agent_id
   )
-)
+  // Apply team filter
+  if (selectedTeamFilter.value !== 'all') {
+    if (selectedTeamFilter.value === 'general') {
+      transfers = transfers.filter(t => !t.team_id)
+    } else {
+      transfers = transfers.filter(t => t.team_id === selectedTeamFilter.value)
+    }
+  }
+  return transfers
+})
+
+// Team queue counts for display
+const teamQueueCounts = computed(() => {
+  const counts: Record<string, number> = { general: 0 }
+  transfersStore.transfers.filter(t => t.status === 'active' && !t.agent_id).forEach(t => {
+    if (!t.team_id) {
+      counts.general++
+    } else {
+      counts[t.team_id] = (counts[t.team_id] || 0) + 1
+    }
+  })
+  return counts
+})
 
 const allActiveTransfers = computed(() =>
   transfersStore.transfers.filter(t => t.status === 'active')
@@ -95,7 +119,7 @@ let refreshInterval: number | null = null
 
 onMounted(async () => {
   console.log('AgentTransfersView mounted, user role:', userRole.value, 'isAdminOrManager:', isAdminOrManager.value)
-  await fetchTransfers()
+  await Promise.all([fetchTransfers(), fetchTeams()])
   // Always try to fetch agents for admin/manager - the API will reject if unauthorized
   if (isAdminOrManager.value) {
     await fetchAgents()
@@ -151,6 +175,23 @@ async function fetchAgents() {
     console.error('Failed to fetch agents:', error)
     toast.error('Failed to load agents list')
   }
+}
+
+async function fetchTeams() {
+  try {
+    const response = await teamsService.list()
+    const data = response.data.data || response.data
+    teams.value = (data.teams || []).filter((t: Team) => t.is_active)
+  } catch (error) {
+    console.error('Failed to load teams:', error)
+    teams.value = []
+  }
+}
+
+function getTeamName(teamId: string | undefined): string {
+  if (!teamId) return 'General Queue'
+  const team = teams.value.find(t => t.id === teamId)
+  return team?.name || 'Unknown Team'
 }
 
 async function pickNextTransfer() {
@@ -424,8 +465,32 @@ function getSourceBadge(source: string) {
             <TabsContent value="queue">
               <Card>
                 <CardHeader>
-                  <CardTitle>Transfer Queue</CardTitle>
-                  <CardDescription>Unassigned transfers waiting for pickup (FIFO)</CardDescription>
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <CardTitle>Transfer Queue</CardTitle>
+                      <CardDescription>Unassigned transfers waiting for pickup (FIFO)</CardDescription>
+                    </div>
+                    <div class="flex items-center gap-3">
+                      <div class="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Badge variant="outline">General: {{ teamQueueCounts.general || 0 }}</Badge>
+                        <Badge v-for="team in teams" :key="team.id" variant="outline">
+                          {{ team.name }}: {{ teamQueueCounts[team.id] || 0 }}
+                        </Badge>
+                      </div>
+                      <Select v-model="selectedTeamFilter">
+                        <SelectTrigger class="w-[180px]">
+                          <SelectValue placeholder="Filter by team" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All Queues</SelectItem>
+                          <SelectItem value="general">General Queue</SelectItem>
+                          <SelectItem v-for="team in teams" :key="team.id" :value="team.id">
+                            {{ team.name }}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent>
                   <div v-if="queueTransfers.length === 0" class="text-center py-8 text-muted-foreground">
@@ -438,6 +503,7 @@ function getSourceBadge(source: string) {
                       <TableRow>
                         <TableHead>Contact</TableHead>
                         <TableHead>Phone</TableHead>
+                        <TableHead>Team</TableHead>
                         <TableHead>Transferred At</TableHead>
                         <TableHead>Source</TableHead>
                         <TableHead>Notes</TableHead>
@@ -448,6 +514,12 @@ function getSourceBadge(source: string) {
                       <TableRow v-for="transfer in queueTransfers" :key="transfer.id">
                         <TableCell class="font-medium">{{ transfer.contact_name }}</TableCell>
                         <TableCell>{{ transfer.phone_number }}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">
+                            <Users class="h-3 w-3 mr-1" />
+                            {{ getTeamName(transfer.team_id) }}
+                          </Badge>
+                        </TableCell>
                         <TableCell>{{ formatDate(transfer.transferred_at) }}</TableCell>
                         <TableCell>
                           <Badge :variant="getSourceBadge(transfer.source).variant">
@@ -491,6 +563,7 @@ function getSourceBadge(source: string) {
                         <TableHead>Contact</TableHead>
                         <TableHead>Phone</TableHead>
                         <TableHead>Assigned To</TableHead>
+                        <TableHead>Team</TableHead>
                         <TableHead>Transferred At</TableHead>
                         <TableHead>Source</TableHead>
                         <TableHead class="text-right">Actions</TableHead>
@@ -506,6 +579,12 @@ function getSourceBadge(source: string) {
                             {{ transfer.agent_name }}
                           </Badge>
                           <Badge v-else variant="destructive">Unassigned</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline">
+                            <Users class="h-3 w-3 mr-1" />
+                            {{ getTeamName(transfer.team_id) }}
+                          </Badge>
                         </TableCell>
                         <TableCell>{{ formatDate(transfer.transferred_at) }}</TableCell>
                         <TableCell>

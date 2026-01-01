@@ -1,0 +1,488 @@
+package handlers
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/valyala/fasthttp"
+	"github.com/zerodha/fastglue"
+)
+
+// TeamRequest represents create/update team request
+type TeamRequest struct {
+	Name               string `json:"name" validate:"required"`
+	Description        string `json:"description"`
+	AssignmentStrategy string `json:"assignment_strategy"` // round_robin, load_balanced, manual
+	IsActive           bool   `json:"is_active"`
+}
+
+// TeamMemberRequest represents add member request
+type TeamMemberRequest struct {
+	UserID string `json:"user_id" validate:"required"`
+	Role   string `json:"role"` // manager, agent
+}
+
+// TeamResponse represents team in API response
+type TeamResponse struct {
+	ID                 uuid.UUID            `json:"id"`
+	Name               string               `json:"name"`
+	Description        string               `json:"description"`
+	AssignmentStrategy string               `json:"assignment_strategy"`
+	IsActive           bool                 `json:"is_active"`
+	MemberCount        int                  `json:"member_count"`
+	Members            []TeamMemberResponse `json:"members,omitempty"`
+	CreatedAt          time.Time            `json:"created_at"`
+	UpdatedAt          time.Time            `json:"updated_at"`
+}
+
+// TeamMemberResponse represents team member in API response
+type TeamMemberResponse struct {
+	ID             uuid.UUID  `json:"id"`
+	UserID         uuid.UUID  `json:"user_id"`
+	FullName       string     `json:"full_name"`
+	Email          string     `json:"email"`
+	Role           string     `json:"role"` // manager, agent
+	IsAvailable    bool       `json:"is_available"`
+	LastAssignedAt *time.Time `json:"last_assigned_at,omitempty"`
+}
+
+// ListTeams returns teams based on user access
+// Admin: all teams, Manager: their teams, Agent: their teams
+func (a *App) ListTeams(r *fastglue.Request) error {
+	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
+	userID := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	userRole := r.RequestCtx.UserValue("role").(string)
+
+	var teams []models.Team
+
+	if userRole == "admin" {
+		// Admin sees all teams
+		if err := a.DB.Where("organization_id = ?", orgID).
+			Preload("Members").Preload("Members.User").
+			Order("name ASC").Find(&teams).Error; err != nil {
+			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to list teams", nil, "")
+		}
+	} else {
+		// Managers and agents only see teams they belong to
+		if err := a.DB.Joins("JOIN team_members ON team_members.team_id = teams.id").
+			Where("teams.organization_id = ? AND team_members.user_id = ?", orgID, userID).
+			Preload("Members").Preload("Members.User").
+			Order("teams.name ASC").Find(&teams).Error; err != nil {
+			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to list teams", nil, "")
+		}
+	}
+
+	// Build response
+	response := make([]TeamResponse, len(teams))
+	for i, t := range teams {
+		response[i] = buildTeamResponse(&t, false)
+	}
+
+	return r.SendEnvelope(map[string]interface{}{"teams": response})
+}
+
+// GetTeam returns a single team with members
+func (a *App) GetTeam(r *fastglue.Request) error {
+	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
+	userID := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	userRole := r.RequestCtx.UserValue("role").(string)
+	teamIDStr := r.RequestCtx.UserValue("id").(string)
+
+	teamID, err := uuid.Parse(teamIDStr)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid team ID", nil, "")
+	}
+
+	var team models.Team
+	if err := a.DB.Where("id = ? AND organization_id = ?", teamID, orgID).
+		Preload("Members").Preload("Members.User").
+		First(&team).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Team not found", nil, "")
+	}
+
+	// Check access for non-admin users
+	if userRole != "admin" {
+		hasAccess := false
+		for _, m := range team.Members {
+			if m.UserID == userID {
+				hasAccess = true
+				break
+			}
+		}
+		if !hasAccess {
+			return r.SendErrorEnvelope(fasthttp.StatusForbidden, "Access denied", nil, "")
+		}
+	}
+
+	return r.SendEnvelope(map[string]interface{}{"team": buildTeamResponse(&team, true)})
+}
+
+// CreateTeam creates a new team (admin only)
+func (a *App) CreateTeam(r *fastglue.Request) error {
+	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
+	userRole := r.RequestCtx.UserValue("role").(string)
+
+	if userRole != "admin" {
+		return r.SendErrorEnvelope(fasthttp.StatusForbidden, "Only admins can create teams", nil, "")
+	}
+
+	var req TeamRequest
+	if err := r.Decode(&req, "json"); err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid request body", nil, "")
+	}
+
+	if req.Name == "" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Team name is required", nil, "")
+	}
+
+	// Validate assignment strategy
+	strategy := req.AssignmentStrategy
+	if strategy == "" {
+		strategy = "round_robin"
+	}
+	if strategy != "round_robin" && strategy != "load_balanced" && strategy != "manual" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid assignment strategy", nil, "")
+	}
+
+	team := models.Team{
+		OrganizationID:     orgID,
+		Name:               req.Name,
+		Description:        req.Description,
+		AssignmentStrategy: strategy,
+		IsActive:           true,
+	}
+
+	if err := a.DB.Create(&team).Error; err != nil {
+		a.Log.Error("Failed to create team", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to create team", nil, "")
+	}
+
+	return r.SendEnvelope(map[string]interface{}{"team": buildTeamResponse(&team, false)})
+}
+
+// UpdateTeam updates a team (admin or team manager)
+func (a *App) UpdateTeam(r *fastglue.Request) error {
+	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
+	userID := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	userRole := r.RequestCtx.UserValue("role").(string)
+	teamIDStr := r.RequestCtx.UserValue("id").(string)
+
+	teamID, err := uuid.Parse(teamIDStr)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid team ID", nil, "")
+	}
+
+	var team models.Team
+	if err := a.DB.Where("id = ? AND organization_id = ?", teamID, orgID).
+		Preload("Members").First(&team).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Team not found", nil, "")
+	}
+
+	// Check access
+	if userRole != "admin" {
+		isManager := false
+		for _, m := range team.Members {
+			if m.UserID == userID && m.Role == "manager" {
+				isManager = true
+				break
+			}
+		}
+		if !isManager {
+			return r.SendErrorEnvelope(fasthttp.StatusForbidden, "Only admins or team managers can update team", nil, "")
+		}
+	}
+
+	var req TeamRequest
+	if err := r.Decode(&req, "json"); err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid request body", nil, "")
+	}
+
+	// Update fields
+	if req.Name != "" {
+		team.Name = req.Name
+	}
+	team.Description = req.Description
+	team.IsActive = req.IsActive
+
+	if req.AssignmentStrategy != "" {
+		if req.AssignmentStrategy != "round_robin" && req.AssignmentStrategy != "load_balanced" && req.AssignmentStrategy != "manual" {
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid assignment strategy", nil, "")
+		}
+		team.AssignmentStrategy = req.AssignmentStrategy
+	}
+
+	if err := a.DB.Save(&team).Error; err != nil {
+		a.Log.Error("Failed to update team", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update team", nil, "")
+	}
+
+	return r.SendEnvelope(map[string]interface{}{"team": buildTeamResponse(&team, false)})
+}
+
+// DeleteTeam deletes a team (admin only)
+func (a *App) DeleteTeam(r *fastglue.Request) error {
+	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
+	userRole := r.RequestCtx.UserValue("role").(string)
+	teamIDStr := r.RequestCtx.UserValue("id").(string)
+
+	if userRole != "admin" {
+		return r.SendErrorEnvelope(fasthttp.StatusForbidden, "Only admins can delete teams", nil, "")
+	}
+
+	teamID, err := uuid.Parse(teamIDStr)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid team ID", nil, "")
+	}
+
+	// Delete team members first
+	if err := a.DB.Where("team_id = ?", teamID).Delete(&models.TeamMember{}).Error; err != nil {
+		a.Log.Error("Failed to delete team members", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to delete team", nil, "")
+	}
+
+	// Delete team
+	result := a.DB.Where("id = ? AND organization_id = ?", teamID, orgID).Delete(&models.Team{})
+	if result.Error != nil {
+		a.Log.Error("Failed to delete team", "error", result.Error)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to delete team", nil, "")
+	}
+
+	if result.RowsAffected == 0 {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Team not found", nil, "")
+	}
+
+	return r.SendEnvelope(map[string]string{"message": "Team deleted"})
+}
+
+// ListTeamMembers lists members of a team
+func (a *App) ListTeamMembers(r *fastglue.Request) error {
+	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
+	userID := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	userRole := r.RequestCtx.UserValue("role").(string)
+	teamIDStr := r.RequestCtx.UserValue("id").(string)
+
+	teamID, err := uuid.Parse(teamIDStr)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid team ID", nil, "")
+	}
+
+	// Verify team exists and user has access
+	var team models.Team
+	if err := a.DB.Where("id = ? AND organization_id = ?", teamID, orgID).
+		Preload("Members").Preload("Members.User").
+		First(&team).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Team not found", nil, "")
+	}
+
+	// Check access for non-admin users
+	if userRole != "admin" {
+		hasAccess := false
+		for _, m := range team.Members {
+			if m.UserID == userID {
+				hasAccess = true
+				break
+			}
+		}
+		if !hasAccess {
+			return r.SendErrorEnvelope(fasthttp.StatusForbidden, "Access denied", nil, "")
+		}
+	}
+
+	members := make([]TeamMemberResponse, len(team.Members))
+	for i, m := range team.Members {
+		members[i] = TeamMemberResponse{
+			ID:             m.ID,
+			UserID:         m.UserID,
+			FullName:       m.User.FullName,
+			Email:          m.User.Email,
+			Role:           m.Role,
+			IsAvailable:    m.User.IsAvailable,
+			LastAssignedAt: m.LastAssignedAt,
+		}
+	}
+
+	return r.SendEnvelope(map[string]interface{}{"members": members})
+}
+
+// AddTeamMember adds a member to a team (admin or team manager)
+func (a *App) AddTeamMember(r *fastglue.Request) error {
+	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
+	userID := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	userRole := r.RequestCtx.UserValue("role").(string)
+	teamIDStr := r.RequestCtx.UserValue("id").(string)
+
+	teamID, err := uuid.Parse(teamIDStr)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid team ID", nil, "")
+	}
+
+	// Verify team exists
+	var team models.Team
+	if err := a.DB.Where("id = ? AND organization_id = ?", teamID, orgID).
+		Preload("Members").First(&team).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Team not found", nil, "")
+	}
+
+	// Check access
+	if userRole != "admin" {
+		isManager := false
+		for _, m := range team.Members {
+			if m.UserID == userID && m.Role == "manager" {
+				isManager = true
+				break
+			}
+		}
+		if !isManager {
+			return r.SendErrorEnvelope(fasthttp.StatusForbidden, "Only admins or team managers can add members", nil, "")
+		}
+	}
+
+	var req TeamMemberRequest
+	if err := r.Decode(&req, "json"); err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid request body", nil, "")
+	}
+
+	memberUserID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid user ID", nil, "")
+	}
+
+	// Verify user exists in org
+	var user models.User
+	if err := a.DB.Where("id = ? AND organization_id = ?", memberUserID, orgID).First(&user).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "User not found", nil, "")
+	}
+
+	// Check if already a member
+	var existingMember models.TeamMember
+	if err := a.DB.Where("team_id = ? AND user_id = ?", teamID, memberUserID).First(&existingMember).Error; err == nil {
+		return r.SendErrorEnvelope(fasthttp.StatusConflict, "User is already a member of this team", nil, "")
+	}
+
+	// Validate role
+	role := req.Role
+	if role == "" {
+		role = "agent"
+	}
+	if role != "manager" && role != "agent" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid role. Must be 'manager' or 'agent'", nil, "")
+	}
+
+	// Non-admin managers can only add agents, not other managers
+	if userRole != "admin" && role == "manager" {
+		return r.SendErrorEnvelope(fasthttp.StatusForbidden, "Only admins can add managers to teams", nil, "")
+	}
+
+	member := models.TeamMember{
+		TeamID: teamID,
+		UserID: memberUserID,
+		Role:   role,
+	}
+
+	if err := a.DB.Create(&member).Error; err != nil {
+		a.Log.Error("Failed to add team member", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to add member", nil, "")
+	}
+
+	return r.SendEnvelope(map[string]interface{}{"member": TeamMemberResponse{
+		ID:          member.ID,
+		UserID:      member.UserID,
+		FullName:    user.FullName,
+		Email:       user.Email,
+		Role:        member.Role,
+		IsAvailable: user.IsAvailable,
+	}})
+}
+
+// RemoveTeamMember removes a member from a team (admin or team manager)
+func (a *App) RemoveTeamMember(r *fastglue.Request) error {
+	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
+	userID := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	userRole := r.RequestCtx.UserValue("role").(string)
+	teamIDStr := r.RequestCtx.UserValue("id").(string)
+	memberUserIDStr := r.RequestCtx.UserValue("user_id_param").(string)
+
+	teamID, err := uuid.Parse(teamIDStr)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid team ID", nil, "")
+	}
+
+	memberUserID, err := uuid.Parse(memberUserIDStr)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid user ID", nil, "")
+	}
+
+	// Verify team exists
+	var team models.Team
+	if err := a.DB.Where("id = ? AND organization_id = ?", teamID, orgID).
+		Preload("Members").First(&team).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Team not found", nil, "")
+	}
+
+	// Check access
+	if userRole != "admin" {
+		isManager := false
+		for _, m := range team.Members {
+			if m.UserID == userID && m.Role == "manager" {
+				isManager = true
+				break
+			}
+		}
+		if !isManager {
+			return r.SendErrorEnvelope(fasthttp.StatusForbidden, "Only admins or team managers can remove members", nil, "")
+		}
+
+		// Non-admin managers cannot remove other managers
+		for _, m := range team.Members {
+			if m.UserID == memberUserID && m.Role == "manager" {
+				return r.SendErrorEnvelope(fasthttp.StatusForbidden, "Only admins can remove managers from teams", nil, "")
+			}
+		}
+	}
+
+	result := a.DB.Where("team_id = ? AND user_id = ?", teamID, memberUserID).Delete(&models.TeamMember{})
+	if result.Error != nil {
+		a.Log.Error("Failed to remove team member", "error", result.Error)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to remove member", nil, "")
+	}
+
+	if result.RowsAffected == 0 {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Member not found in team", nil, "")
+	}
+
+	return r.SendEnvelope(map[string]string{"message": "Member removed from team"})
+}
+
+// Helper function to build team response
+func buildTeamResponse(team *models.Team, includeMembers bool) TeamResponse {
+	resp := TeamResponse{
+		ID:                 team.ID,
+		Name:               team.Name,
+		Description:        team.Description,
+		AssignmentStrategy: team.AssignmentStrategy,
+		IsActive:           team.IsActive,
+		MemberCount:        len(team.Members),
+		CreatedAt:          team.CreatedAt,
+		UpdatedAt:          team.UpdatedAt,
+	}
+
+	if includeMembers && len(team.Members) > 0 {
+		resp.Members = make([]TeamMemberResponse, len(team.Members))
+		for i, m := range team.Members {
+			resp.Members[i] = TeamMemberResponse{
+				ID:             m.ID,
+				UserID:         m.UserID,
+				Role:           m.Role,
+				LastAssignedAt: m.LastAssignedAt,
+			}
+			if m.User != nil {
+				resp.Members[i].FullName = m.User.FullName
+				resp.Members[i].Email = m.User.Email
+				resp.Members[i].IsAvailable = m.User.IsAvailable
+			}
+		}
+	}
+
+	return resp
+}

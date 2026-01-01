@@ -149,6 +149,12 @@ const router = createRouter({
           meta: { roles: ['admin'] }
         },
         {
+          path: 'settings/teams',
+          name: 'teams',
+          component: () => import('@/views/settings/TeamsView.vue'),
+          meta: { roles: ['admin', 'manager'] }
+        },
+        {
           path: 'settings/api-keys',
           name: 'api-keys',
           component: () => import('@/views/settings/APIKeysView.vue'),

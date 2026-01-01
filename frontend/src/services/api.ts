@@ -303,6 +303,54 @@ export interface WebhookEvent {
   description: string
 }
 
+export interface Team {
+  id: string
+  name: string
+  description: string
+  assignment_strategy: 'round_robin' | 'load_balanced' | 'manual'
+  is_active: boolean
+  member_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface TeamMember {
+  id: string
+  team_id: string
+  user_id: string
+  role: 'manager' | 'agent'
+  last_assigned_at: string | null
+  user: {
+    id: string
+    full_name: string
+    email: string
+    is_available: boolean
+  }
+}
+
+export const teamsService = {
+  list: () => api.get<{ teams: Team[] }>('/teams'),
+  get: (id: string) => api.get<{ team: Team }>(`/teams/${id}`),
+  create: (data: {
+    name: string
+    description?: string
+    assignment_strategy?: 'round_robin' | 'load_balanced' | 'manual'
+  }) => api.post<{ team: Team }>('/teams', data),
+  update: (id: string, data: {
+    name?: string
+    description?: string
+    assignment_strategy?: 'round_robin' | 'load_balanced' | 'manual'
+    is_active?: boolean
+  }) => api.put<{ team: Team }>(`/teams/${id}`, data),
+  delete: (id: string) => api.delete(`/teams/${id}`),
+  // Members
+  listMembers: (teamId: string) => api.get<{ members: TeamMember[] }>(`/teams/${teamId}/members`),
+  addMember: (teamId: string, data: { user_id: string; role?: 'manager' | 'agent' }) =>
+    api.post<{ member: TeamMember }>(`/teams/${teamId}/members`, data),
+  removeMember: (teamId: string, userId: string) =>
+    api.delete(`/teams/${teamId}/members/${userId}`)
+}
+
 export const webhooksService = {
   list: () => api.get<{ webhooks: Webhook[]; available_events: WebhookEvent[] }>('/webhooks'),
   get: (id: string) => api.get<Webhook>(`/webhooks/${id}`),

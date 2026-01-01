@@ -817,7 +817,12 @@ func (a *App) matchFlowTrigger(orgID uuid.UUID, accountName, messageText string)
 
 // startFlow initiates a chatbot flow for a user
 func (a *App) startFlow(account *models.WhatsAppAccount, session *models.ChatbotSession, contact *models.Contact, flow *models.ChatbotFlow) {
-	a.Log.Info("Starting flow", "flow_id", flow.ID, "flow_name", flow.Name, "contact", contact.PhoneNumber)
+	a.Log.Info("Starting flow", "flow_id", flow.ID, "flow_name", flow.Name, "contact", contact.PhoneNumber, "num_steps", len(flow.Steps))
+
+	// Log all steps for debugging
+	for i, step := range flow.Steps {
+		a.Log.Info("Flow step", "index", i, "step_name", step.StepName, "step_order", step.StepOrder, "message_type", step.MessageType)
+	}
 
 	// Update session with flow info
 	session.CurrentFlowID = &flow.ID
@@ -835,6 +840,7 @@ func (a *App) startFlow(account *models.WhatsAppAccount, session *models.Chatbot
 	// Send first step message (with skip check)
 	if len(flow.Steps) > 0 {
 		firstStep := &flow.Steps[0]
+		a.Log.Info("Sending first step", "step_name", firstStep.StepName, "message_type", firstStep.MessageType, "message", firstStep.Message)
 		session.CurrentStep = firstStep.StepName
 		a.DB.Model(session).Update("current_step", firstStep.StepName)
 
@@ -1244,6 +1250,40 @@ func (a *App) sendStepMessage(account *models.WhatsAppAccount, session *models.C
 			a.sendAndSaveTextMessage(account, contact, message)
 		}
 		a.logSessionMessage(session.ID, "outgoing", message, step.StepName)
+
+	case "transfer":
+		// Transfer to team/agent queue
+		message = a.replaceVariables(step.Message, session.SessionData)
+		if message != "" {
+			a.sendAndSaveTextMessage(account, contact, message)
+			a.logSessionMessage(session.ID, "outgoing", message, step.StepName)
+		}
+
+		// Get transfer configuration
+		var teamID *uuid.UUID
+		var notes string
+		if step.TransferConfig != nil {
+			if teamIDStr, ok := step.TransferConfig["team_id"].(string); ok && teamIDStr != "" && teamIDStr != "_general" {
+				if parsedID, err := uuid.Parse(teamIDStr); err == nil {
+					teamID = &parsedID
+				}
+			}
+			if n, ok := step.TransferConfig["notes"].(string); ok {
+				notes = a.replaceVariables(n, session.SessionData)
+			}
+		}
+
+		// Create the transfer
+		if teamID != nil {
+			a.createTransferToTeam(account, contact, *teamID, notes, "flow")
+		} else {
+			// General queue transfer
+			a.createTransferToQueue(account, contact, "flow")
+		}
+
+		// End the flow session (transfer takes over)
+		a.exitFlow(session)
+		return
 
 	default:
 		// Default: use the step message with variable replacement

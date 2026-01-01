@@ -59,6 +59,8 @@ func GetMigrationModels() []MigrationModel {
 		// Core models
 		{"Organization", &models.Organization{}},
 		{"User", &models.User{}},
+		{"Team", &models.Team{}},
+		{"TeamMember", &models.TeamMember{}},
 		{"APIKey", &models.APIKey{}},
 		{"SSOProvider", &models.SSOProvider{}},
 		{"Webhook", &models.Webhook{}},
@@ -217,6 +219,12 @@ func CreateIndexes(db *gorm.DB) error {
 
 		// Agent transfers indexes
 		`CREATE INDEX IF NOT EXISTS idx_agent_transfers_active ON agent_transfers(organization_id, phone_number, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_transfers_team ON agent_transfers(team_id, status) WHERE team_id IS NOT NULL`,
+
+		// Teams indexes
+		`CREATE INDEX IF NOT EXISTS idx_teams_org_active ON teams(organization_id, is_active)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_team_members_unique ON team_members(team_id, user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id)`,
 
 		// WhatsApp accounts indexes
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_accounts_org_phone ON whatsapp_accounts(organization_id, phone_id)`,

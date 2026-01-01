@@ -186,6 +186,7 @@ const allNavItems = [
       { name: 'General', path: '/settings', icon: Settings },
       { name: 'Accounts', path: '/settings/accounts', icon: Users },
       { name: 'Canned Responses', path: '/settings/canned-responses', icon: MessageSquareText },
+      { name: 'Teams', path: '/settings/teams', icon: Users },
       { name: 'Users', path: '/settings/users', icon: Users, roles: ['admin'] },
       { name: 'API Keys', path: '/settings/api-keys', icon: Key, roles: ['admin'] },
       { name: 'Webhooks', path: '/settings/webhooks', icon: Webhook, roles: ['admin'] },

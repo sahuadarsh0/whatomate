@@ -538,6 +538,7 @@ type FlowStepRequest struct {
 	InputConfig     map[string]interface{}   `json:"input_config"`
 	ApiConfig       map[string]interface{}   `json:"api_config"`
 	Buttons         []map[string]interface{} `json:"buttons"`
+	TransferConfig  map[string]interface{}   `json:"transfer_config"`
 	ValidationRegex string                   `json:"validation_regex"`
 	ValidationError string                   `json:"validation_error"`
 	StoreAs         string                   `json:"store_as"`
@@ -615,6 +616,7 @@ func (a *App) CreateChatbotFlow(r *fastglue.Request) error {
 			InputConfig:     models.JSONB(stepReq.InputConfig),
 			ApiConfig:       models.JSONB(stepReq.ApiConfig),
 			Buttons:         buttons,
+			TransferConfig:  models.JSONB(stepReq.TransferConfig),
 			ValidationRegex: stepReq.ValidationRegex,
 			ValidationError: stepReq.ValidationError,
 			StoreAs:         stepReq.StoreAs,
@@ -761,6 +763,7 @@ func (a *App) UpdateChatbotFlow(r *fastglue.Request) error {
 				InputConfig:     models.JSONB(stepReq.InputConfig),
 				ApiConfig:       models.JSONB(stepReq.ApiConfig),
 				Buttons:         buttons,
+				TransferConfig:  models.JSONB(stepReq.TransferConfig),
 				ValidationRegex: stepReq.ValidationRegex,
 				ValidationError: stepReq.ValidationError,
 				StoreAs:         stepReq.StoreAs,

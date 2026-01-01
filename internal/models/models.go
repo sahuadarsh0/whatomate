@@ -141,6 +141,41 @@ func (UserAvailabilityLog) TableName() string {
 	return "user_availability_logs"
 }
 
+// Team represents a group of agents handling specific types of chats
+type Team struct {
+	BaseModel
+	OrganizationID     uuid.UUID `gorm:"type:uuid;index;not null" json:"organization_id"`
+	Name               string    `gorm:"size:100;not null" json:"name"`
+	Description        string    `gorm:"size:500" json:"description"`
+	AssignmentStrategy string    `gorm:"size:50;default:'round_robin'" json:"assignment_strategy"` // round_robin, load_balanced, manual
+	IsActive           bool      `gorm:"default:true" json:"is_active"`
+
+	// Relations
+	Organization *Organization `gorm:"foreignKey:OrganizationID" json:"organization,omitempty"`
+	Members      []TeamMember  `gorm:"foreignKey:TeamID" json:"members,omitempty"`
+}
+
+func (Team) TableName() string {
+	return "teams"
+}
+
+// TeamMember represents a user's membership in a team
+type TeamMember struct {
+	BaseModel
+	TeamID         uuid.UUID  `gorm:"type:uuid;index;not null" json:"team_id"`
+	UserID         uuid.UUID  `gorm:"type:uuid;index;not null" json:"user_id"`
+	Role           string     `gorm:"size:50;default:'agent'" json:"role"` // manager, agent
+	LastAssignedAt *time.Time `json:"last_assigned_at,omitempty"`          // For round-robin tracking
+
+	// Relations
+	Team *Team `gorm:"foreignKey:TeamID" json:"team,omitempty"`
+	User *User `gorm:"foreignKey:UserID" json:"user,omitempty"`
+}
+
+func (TeamMember) TableName() string {
+	return "team_members"
+}
+
 // APIKey represents an API key for programmatic access
 type APIKey struct {
 	BaseModel

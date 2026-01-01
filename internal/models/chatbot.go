@@ -104,11 +104,12 @@ type ChatbotFlowStep struct {
 	StepName        string     `gorm:"size:100;not null" json:"step_name"`
 	StepOrder       int        `gorm:"not null" json:"step_order"`
 	Message         string     `gorm:"type:text;not null" json:"message"`
-	MessageType     string     `gorm:"size:20;default:'text'" json:"message_type"` // text, template, script, api_fetch, buttons
+	MessageType     string     `gorm:"size:20;default:'text'" json:"message_type"` // text, template, script, api_fetch, buttons, transfer
 	TemplateID      *uuid.UUID `gorm:"type:uuid" json:"template_id,omitempty"`
-	ApiConfig       JSONB      `gorm:"type:jsonb" json:"api_config"`     // {url, method, headers, body, response_path, fallback_message}
-	Buttons         JSONBArray `gorm:"type:jsonb" json:"buttons"`        // [{id, title}] - max 10 options (3=buttons, 4-10=list)
-	InputType       string     `gorm:"size:20" json:"input_type"` // none, text, number, email, phone, date, select, button, whatsapp_flow
+	ApiConfig       JSONB      `gorm:"type:jsonb" json:"api_config"`      // {url, method, headers, body, response_path, fallback_message}
+	Buttons         JSONBArray `gorm:"type:jsonb" json:"buttons"`         // [{id, title}] - max 10 options (3=buttons, 4-10=list)
+	TransferConfig  JSONB      `gorm:"type:jsonb" json:"transfer_config"` // {team_id: uuid, notes: string} - for transfer message type
+	InputType       string     `gorm:"size:20" json:"input_type"`         // none, text, number, email, phone, date, select, button, whatsapp_flow
 	InputConfig     JSONB      `gorm:"type:jsonb" json:"input_config"`
 	ValidationRegex string     `gorm:"size:255" json:"validation_regex"`
 	ValidationError string     `gorm:"type:text" json:"validation_error"`
@@ -202,6 +203,7 @@ type AgentTransfer struct {
 	Status              string     `gorm:"size:20;default:'active'" json:"status"` // active, resumed
 	Source              string     `gorm:"size:20;default:'manual'" json:"source"` // manual, flow, keyword, chatbot_disabled
 	AgentID             *uuid.UUID `gorm:"type:uuid" json:"agent_id,omitempty"`
+	TeamID              *uuid.UUID `gorm:"type:uuid;index" json:"team_id,omitempty"` // Team queue (null = general queue)
 	TransferredByUserID *uuid.UUID `gorm:"type:uuid" json:"transferred_by_user_id,omitempty"` // User who initiated the transfer (null for system)
 	Notes               string     `gorm:"type:text" json:"notes"`
 	TransferredAt       time.Time  `gorm:"autoCreateTime" json:"transferred_at"`
@@ -212,6 +214,7 @@ type AgentTransfer struct {
 	Organization      *Organization `gorm:"foreignKey:OrganizationID" json:"organization,omitempty"`
 	Contact           *Contact      `gorm:"foreignKey:ContactID" json:"contact,omitempty"`
 	Agent             *User         `gorm:"foreignKey:AgentID" json:"agent,omitempty"`
+	Team              *Team         `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	TransferredByUser *User         `gorm:"foreignKey:TransferredByUserID" json:"transferred_by_user,omitempty"`
 	ResumedByUser     *User         `gorm:"foreignKey:ResumedBy" json:"resumed_by_user,omitempty"`
 }
