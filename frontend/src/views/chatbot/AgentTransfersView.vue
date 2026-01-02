@@ -118,9 +118,6 @@ const resumedTransfers = computed(() =>
     .sort((a, b) => new Date(b.resumed_at || b.transferred_at).getTime() - new Date(a.resumed_at || a.transferred_at).getTime())
 )
 
-// Auto-refresh interval for real-time updates
-let refreshInterval: number | null = null
-
 onMounted(async () => {
   console.log('AgentTransfersView mounted, user role:', userRole.value, 'isAdminOrManager:', isAdminOrManager.value)
   await Promise.all([fetchTransfers(), fetchTeams()])
@@ -130,23 +127,8 @@ onMounted(async () => {
   } else {
     console.log('Not admin or manager, skipping fetchAgents')
   }
-
-  // Set up periodic check - only fetch if WebSocket hasn't delivered updates recently
-  // This is a fallback for when WebSocket connection is broken
-  refreshInterval = window.setInterval(() => {
-    // Only fetch if no WebSocket updates in the last 60 seconds
-    if (transfersStore.isSyncStale(60000)) {
-      console.log('WebSocket sync stale, fetching transfers via API')
-      transfersStore.fetchTransfers()
-    }
-  }, 30000)
-})
-
-onUnmounted(() => {
-  if (refreshInterval) {
-    clearInterval(refreshInterval)
-    refreshInterval = null
-  }
+  // No polling - WebSocket handles real-time updates
+  // Reconnection refresh handles sync after disconnect
 })
 
 // Watch for changes in the store's transfers array
