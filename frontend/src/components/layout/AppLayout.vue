@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useTransfersStore } from '@/stores/transfers'
 import { usersService } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -14,6 +15,16 @@ import {
   PopoverContent,
   PopoverTrigger
 } from '@/components/ui/popover'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from '@/components/ui/alert-dialog'
 import {
   LayoutDashboard,
   MessageSquare,
@@ -45,22 +56,52 @@ import { getInitials } from '@/lib/utils'
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const transfersStore = useTransfersStore()
 const isCollapsed = ref(false)
 const isUserMenuOpen = ref(false)
 const isUpdatingAvailability = ref(false)
+const showAwayWarning = ref(false)
+const awayWarningTransferCount = ref(0)
 const { colorMode, isDark, setColorMode } = useColorMode()
 
 const handleAvailabilityChange = async (checked: boolean) => {
+  // If going away and has assigned transfers, show warning
+  if (!checked) {
+    const myActiveTransfers = transfersStore.myTransfers.length
+    if (myActiveTransfers > 0) {
+      awayWarningTransferCount.value = myActiveTransfers
+      showAwayWarning.value = true
+      return
+    }
+  }
+
+  await setAvailability(checked)
+}
+
+const confirmGoAway = async () => {
+  showAwayWarning.value = false
+  await setAvailability(false)
+}
+
+const setAvailability = async (checked: boolean) => {
   isUpdatingAvailability.value = true
   try {
     const response = await usersService.updateAvailability(checked)
     const data = response.data.data
     authStore.setAvailability(checked, data.break_started_at)
-    toast.success(checked ? 'Available' : 'Away', {
-      description: checked
-        ? 'You are now available to receive transfers'
-        : 'You will not receive new transfer assignments'
-    })
+
+    if (checked) {
+      toast.success('Available', {
+        description: 'You are now available to receive transfers'
+      })
+    } else {
+      const transfersReturned = data.transfers_to_queue || 0
+      toast.success('Away', {
+        description: transfersReturned > 0
+          ? `${transfersReturned} transfer(s) returned to queue`
+          : 'You will not receive new transfer assignments'
+      })
+    }
   } catch (error) {
     toast.error('Error', {
       description: 'Failed to update availability'
@@ -403,5 +444,22 @@ const handleLogout = async () => {
     <main class="flex-1 overflow-hidden">
       <RouterView />
     </main>
+
+    <!-- Away Warning Dialog -->
+    <AlertDialog :open="showAwayWarning" @update:open="showAwayWarning = $event">
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Active Transfers Will Be Returned to Queue</AlertDialogTitle>
+          <AlertDialogDescription>
+            You have {{ awayWarningTransferCount }} active transfer(s) assigned to you.
+            Setting your status to "Away" will return them to the queue for other agents to pick up.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction @click="confirmGoAway">Go Away</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </div>
 </template>
