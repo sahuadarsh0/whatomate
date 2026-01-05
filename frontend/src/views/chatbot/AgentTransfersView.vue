@@ -112,11 +112,18 @@ const allActiveTransfers = computed(() =>
   transfersStore.transfers.filter(t => t.status === 'active')
 )
 
-const resumedTransfers = computed(() =>
-  transfersStore.transfers
-    .filter(t => t.status === 'resumed')
-    .sort((a, b) => new Date(b.resumed_at || b.transferred_at).getTime() - new Date(a.resumed_at || a.transferred_at).getTime())
-)
+// Use store's history transfers with pagination
+const historyTransfers = computed(() => transfersStore.historyTransfers)
+const hasMoreHistory = computed(() => transfersStore.hasMoreHistory)
+const isLoadingHistory = computed(() => transfersStore.isLoadingHistory)
+const historyTotalCount = computed(() => transfersStore.historyTotalCount)
+
+// Fetch history when switching to history tab
+watch(activeTab, async (newTab) => {
+  if (newTab === 'history' && historyTransfers.value.length === 0) {
+    await transfersStore.fetchHistory()
+  }
+})
 
 onMounted(async () => {
   console.log('AgentTransfersView mounted, user role:', userRole.value, 'isAdminOrManager:', isAdminOrManager.value)
@@ -692,37 +699,60 @@ function formatTimeRemaining(deadline: string | undefined): string {
             <TabsContent value="history">
               <Card>
                 <CardHeader>
-                  <CardTitle>Transfer History</CardTitle>
+                  <CardTitle class="flex items-center justify-between">
+                    <span>Transfer History</span>
+                    <span v-if="historyTotalCount > 0" class="text-sm font-normal text-muted-foreground">
+                      {{ historyTransfers.length }} of {{ historyTotalCount }}
+                    </span>
+                  </CardTitle>
                   <CardDescription>Resumed transfers</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div v-if="resumedTransfers.length === 0" class="text-center py-8 text-muted-foreground">
+                  <!-- Loading state -->
+                  <div v-if="isLoadingHistory && historyTransfers.length === 0" class="text-center py-8">
+                    <Loader2 class="h-8 w-8 mx-auto mb-4 animate-spin text-muted-foreground" />
+                    <p class="text-muted-foreground">Loading history...</p>
+                  </div>
+
+                  <div v-else-if="historyTransfers.length === 0" class="text-center py-8 text-muted-foreground">
                     <Clock class="h-12 w-12 mx-auto mb-4 opacity-50" />
                     <p>No transfer history</p>
                   </div>
 
-                  <Table v-else>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Contact</TableHead>
-                        <TableHead>Phone</TableHead>
-                        <TableHead>Transferred By</TableHead>
-                        <TableHead>Handled By</TableHead>
-                        <TableHead>Transferred At</TableHead>
-                        <TableHead>Resumed At</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      <TableRow v-for="transfer in resumedTransfers" :key="transfer.id">
-                        <TableCell class="font-medium">{{ transfer.contact_name }}</TableCell>
-                        <TableCell>{{ transfer.phone_number }}</TableCell>
-                        <TableCell>{{ transfer.transferred_by_name || 'System' }}</TableCell>
-                        <TableCell>{{ transfer.agent_name || '-' }}</TableCell>
-                        <TableCell>{{ formatDate(transfer.transferred_at) }}</TableCell>
-                        <TableCell>{{ transfer.resumed_at ? formatDate(transfer.resumed_at) : '-' }}</TableCell>
-                      </TableRow>
-                    </TableBody>
-                  </Table>
+                  <template v-else>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Contact</TableHead>
+                          <TableHead>Phone</TableHead>
+                          <TableHead>Handled By</TableHead>
+                          <TableHead>Transferred At</TableHead>
+                          <TableHead>Resumed At</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        <TableRow v-for="transfer in historyTransfers" :key="transfer.id">
+                          <TableCell class="font-medium">{{ transfer.contact_name }}</TableCell>
+                          <TableCell>{{ transfer.phone_number }}</TableCell>
+                          <TableCell>{{ transfer.agent_name || '-' }}</TableCell>
+                          <TableCell>{{ formatDate(transfer.transferred_at) }}</TableCell>
+                          <TableCell>{{ transfer.resumed_at ? formatDate(transfer.resumed_at) : '-' }}</TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+
+                    <!-- Load More button -->
+                    <div v-if="hasMoreHistory" class="flex justify-center mt-4">
+                      <Button
+                        variant="outline"
+                        @click="transfersStore.loadMoreHistory()"
+                        :disabled="isLoadingHistory"
+                      >
+                        <Loader2 v-if="isLoadingHistory" class="h-4 w-4 mr-2 animate-spin" />
+                        Load More
+                      </Button>
+                    </div>
+                  </template>
                 </CardContent>
               </Card>
             </TabsContent>

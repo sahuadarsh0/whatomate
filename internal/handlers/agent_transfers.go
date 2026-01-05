@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"encoding/json"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,6 +13,40 @@ import (
 	"github.com/zerodha/fastglue"
 	"gorm.io/gorm/clause"
 )
+
+// agentTransferRow represents a flat row result from the JOINed query
+type agentTransferRow struct {
+	// AgentTransfer fields
+	ID                    uuid.UUID  `gorm:"column:id"`
+	OrganizationID        uuid.UUID  `gorm:"column:organization_id"`
+	ContactID             uuid.UUID  `gorm:"column:contact_id"`
+	WhatsAppAccount       string     `gorm:"column:whatsapp_account"`
+	PhoneNumber           string     `gorm:"column:phone_number"`
+	Status                string     `gorm:"column:status"`
+	Source                string     `gorm:"column:source"`
+	AgentID               *uuid.UUID `gorm:"column:agent_id"`
+	TeamID                *uuid.UUID `gorm:"column:team_id"`
+	TransferredByUserID   *uuid.UUID `gorm:"column:transferred_by_user_id"`
+	Notes                 string     `gorm:"column:notes"`
+	TransferredAt         time.Time  `gorm:"column:transferred_at"`
+	ResumedAt             *time.Time `gorm:"column:resumed_at"`
+	ResumedBy             *uuid.UUID `gorm:"column:resumed_by"`
+	SLAResponseDeadline   *time.Time `gorm:"column:sla_response_deadline"`
+	SLAResolutionDeadline *time.Time `gorm:"column:sla_resolution_deadline"`
+	SLABreached           bool       `gorm:"column:sla_breached"`
+	SLABreachedAt         *time.Time `gorm:"column:sla_breached_at"`
+	EscalationLevel       int        `gorm:"column:escalation_level"`
+	EscalatedAt           *time.Time `gorm:"column:escalated_at"`
+	PickedUpAt            *time.Time `gorm:"column:picked_up_at"`
+	ExpiresAt             *time.Time `gorm:"column:expires_at"`
+
+	// Joined fields
+	ContactName       *string `gorm:"column:contact_name"`
+	AgentName         *string `gorm:"column:agent_name"`
+	TeamName          *string `gorm:"column:team_name"`
+	TransferredByName *string `gorm:"column:transferred_by_name"`
+	ResumedByName     *string `gorm:"column:resumed_by_name"`
+}
 
 // CreateAgentTransferRequest represents the request to create an agent transfer
 type CreateAgentTransferRequest struct {
@@ -75,27 +111,85 @@ func (a *App) ListAgentTransfers(r *fastglue.Request) error {
 	status := string(r.RequestCtx.QueryArgs().Peek("status"))
 	teamIDStr := string(r.RequestCtx.QueryArgs().Peek("team_id"))
 
-	query := a.DB.Where("organization_id = ?", orgID).
-		Preload("Contact").
-		Preload("Agent").
-		Preload("Team").
-		Preload("TransferredByUser").
-		Preload("ResumedByUser").
-		Order("transferred_at ASC") // FIFO
+	// Pagination params
+	limit := 100 // Default limit
+	offset := 0
+	if limitStr := string(r.RequestCtx.QueryArgs().Peek("limit")); limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 && parsed <= 500 {
+			limit = parsed
+		}
+	}
+	if offsetStr := string(r.RequestCtx.QueryArgs().Peek("offset")); offsetStr != "" {
+		if parsed, err := strconv.Atoi(offsetStr); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	// Lazy loading: parse include parameter for optional relations
+	// Example: ?include=contact,agent,team or ?include=all (default: all)
+	includeParam := string(r.RequestCtx.QueryArgs().Peek("include"))
+	includeAll := includeParam == "" || includeParam == "all"
+	includeSet := make(map[string]bool)
+	if !includeAll {
+		for _, inc := range strings.Split(includeParam, ",") {
+			includeSet[strings.TrimSpace(inc)] = true
+		}
+	}
+
+	// Build SELECT clause based on what relations are needed
+	selectCols := []string{"agent_transfers.*"}
+	if includeAll || includeSet["contact"] {
+		selectCols = append(selectCols, "contacts.profile_name AS contact_name")
+	}
+	if includeAll || includeSet["agent"] {
+		selectCols = append(selectCols, "agent.full_name AS agent_name")
+	}
+	if includeAll || includeSet["team"] {
+		selectCols = append(selectCols, "teams.name AS team_name")
+	}
+	if includeAll || includeSet["transferred_by"] {
+		selectCols = append(selectCols, "transferred_by.full_name AS transferred_by_name")
+	}
+	if includeAll || includeSet["resumed_by"] {
+		selectCols = append(selectCols, "resumed_by.full_name AS resumed_by_name")
+	}
+
+	// Build query with conditional JOINs for better performance
+	query := a.DB.Table("agent_transfers").
+		Select(strings.Join(selectCols, ", ")).
+		Where("agent_transfers.organization_id = ?", orgID).
+		Order("agent_transfers.transferred_at ASC") // FIFO
+
+	// Only add JOINs for requested relations (lazy loading)
+	if includeAll || includeSet["contact"] {
+		query = query.Joins("LEFT JOIN contacts ON contacts.id = agent_transfers.contact_id")
+	}
+	if includeAll || includeSet["agent"] {
+		query = query.Joins("LEFT JOIN users AS agent ON agent.id = agent_transfers.agent_id")
+	}
+	if includeAll || includeSet["team"] {
+		query = query.Joins("LEFT JOIN teams ON teams.id = agent_transfers.team_id")
+	}
+	if includeAll || includeSet["transferred_by"] {
+		query = query.Joins("LEFT JOIN users AS transferred_by ON transferred_by.id = agent_transfers.transferred_by_user_id")
+	}
+	if includeAll || includeSet["resumed_by"] {
+		query = query.Joins("LEFT JOIN users AS resumed_by ON resumed_by.id = agent_transfers.resumed_by")
+	}
 
 	// Filter by status if provided
 	if status != "" {
-		query = query.Where("status = ?", status)
+		query = query.Where("agent_transfers.status = ?", status)
 	}
 
 	// Filter by team if provided
 	if teamIDStr != "" {
 		if teamIDStr == "general" {
-			query = query.Where("team_id IS NULL")
+			query = query.Where("agent_transfers.team_id IS NULL")
 		} else {
 			teamID, err := uuid.Parse(teamIDStr)
 			if err == nil {
-				query = query.Where("team_id = ?", teamID)
+				query = query.Where("agent_transfers.team_id = ?", teamID)
 			}
 		}
 	}
@@ -114,23 +208,54 @@ func (a *App) ListAgentTransfers(r *fastglue.Request) error {
 	if role == "agent" {
 		// Agents see their assigned transfers + unassigned in their team queues
 		if len(userTeamIDs) > 0 {
-			query = query.Where("agent_id = ? OR (agent_id IS NULL AND (team_id IS NULL OR team_id IN ?))", userID, userTeamIDs)
+			query = query.Where("agent_transfers.agent_id = ? OR (agent_transfers.agent_id IS NULL AND (agent_transfers.team_id IS NULL OR agent_transfers.team_id IN ?))", userID, userTeamIDs)
 		} else {
 			// Agent not in any team - see own transfers + general queue only
-			query = query.Where("agent_id = ? OR (agent_id IS NULL AND team_id IS NULL)", userID)
+			query = query.Where("agent_transfers.agent_id = ? OR (agent_transfers.agent_id IS NULL AND agent_transfers.team_id IS NULL)", userID)
 		}
 	} else if role == "manager" {
 		// Managers see their team's transfers (assigned and unassigned)
 		if len(userTeamIDs) > 0 {
-			query = query.Where("team_id IN ? OR (team_id IS NULL AND agent_id IS NULL)", userTeamIDs)
+			query = query.Where("agent_transfers.team_id IN ? OR (agent_transfers.team_id IS NULL AND agent_transfers.agent_id IS NULL)", userTeamIDs)
 		} else {
 			// Manager not in any team - see only general queue
-			query = query.Where("team_id IS NULL AND agent_id IS NULL")
+			query = query.Where("agent_transfers.team_id IS NULL AND agent_transfers.agent_id IS NULL")
 		}
 	}
 
-	var transfers []models.AgentTransfer
-	if err := query.Find(&transfers).Error; err != nil {
+	// Get total count before pagination (for frontend to know if more exist)
+	var totalCount int64
+	countQuery := a.DB.Table("agent_transfers").Where("agent_transfers.organization_id = ?", orgID)
+	if status != "" {
+		countQuery = countQuery.Where("agent_transfers.status = ?", status)
+	}
+	if teamIDStr != "" {
+		if teamIDStr == "general" {
+			countQuery = countQuery.Where("agent_transfers.team_id IS NULL")
+		} else if teamID, err := uuid.Parse(teamIDStr); err == nil {
+			countQuery = countQuery.Where("agent_transfers.team_id = ?", teamID)
+		}
+	}
+	if role == "agent" {
+		if len(userTeamIDs) > 0 {
+			countQuery = countQuery.Where("agent_transfers.agent_id = ? OR (agent_transfers.agent_id IS NULL AND (agent_transfers.team_id IS NULL OR agent_transfers.team_id IN ?))", userID, userTeamIDs)
+		} else {
+			countQuery = countQuery.Where("agent_transfers.agent_id = ? OR (agent_transfers.agent_id IS NULL AND agent_transfers.team_id IS NULL)", userID)
+		}
+	} else if role == "manager" {
+		if len(userTeamIDs) > 0 {
+			countQuery = countQuery.Where("agent_transfers.team_id IN ? OR (agent_transfers.team_id IS NULL AND agent_transfers.agent_id IS NULL)", userTeamIDs)
+		} else {
+			countQuery = countQuery.Where("agent_transfers.team_id IS NULL AND agent_transfers.agent_id IS NULL")
+		}
+	}
+	countQuery.Count(&totalCount)
+
+	// Apply pagination
+	query = query.Limit(limit).Offset(offset)
+
+	var transfers []agentTransferRow
+	if err := query.Scan(&transfers).Error; err != nil {
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to fetch transfers", nil, "")
 	}
 
@@ -173,7 +298,7 @@ func (a *App) ListAgentTransfers(r *fastglue.Request) error {
 	// Check if phone masking is enabled
 	shouldMask := a.ShouldMaskPhoneNumbers(orgID)
 
-	// Build response
+	// Build response from flat joined rows
 	response := make([]AgentTransferResponse, len(transfers))
 	for i, t := range transfers {
 		phoneNumber := t.PhoneNumber
@@ -192,8 +317,8 @@ func (a *App) ListAgentTransfers(r *fastglue.Request) error {
 			TransferredAt:   t.TransferredAt.Format(time.RFC3339),
 		}
 
-		if t.Contact != nil {
-			contactName := t.Contact.ProfileName
+		if t.ContactName != nil {
+			contactName := *t.ContactName
 			if shouldMask {
 				contactName = MaskIfPhoneNumber(contactName)
 			}
@@ -203,25 +328,19 @@ func (a *App) ListAgentTransfers(r *fastglue.Request) error {
 		if t.AgentID != nil {
 			agentIDStr := t.AgentID.String()
 			resp.AgentID = &agentIDStr
-			if t.Agent != nil {
-				resp.AgentName = &t.Agent.FullName
-			}
+			resp.AgentName = t.AgentName
 		}
 
 		if t.TransferredByUserID != nil {
 			transferredBy := t.TransferredByUserID.String()
 			resp.TransferredBy = &transferredBy
-			if t.TransferredByUser != nil {
-				resp.TransferredByName = &t.TransferredByUser.FullName
-			}
+			resp.TransferredByName = t.TransferredByName
 		}
 
 		if t.TeamID != nil {
 			teamIDStr := t.TeamID.String()
 			resp.TeamID = &teamIDStr
-			if t.Team != nil {
-				resp.TeamName = &t.Team.Name
-			}
+			resp.TeamName = t.TeamName
 		}
 
 		if t.ResumedAt != nil {
@@ -232,9 +351,7 @@ func (a *App) ListAgentTransfers(r *fastglue.Request) error {
 		if t.ResumedBy != nil {
 			resumedBy := t.ResumedBy.String()
 			resp.ResumedBy = &resumedBy
-			if t.ResumedByUser != nil {
-				resp.ResumedByName = &t.ResumedByUser.FullName
-			}
+			resp.ResumedByName = t.ResumedByName
 		}
 
 		// SLA fields
@@ -272,6 +389,9 @@ func (a *App) ListAgentTransfers(r *fastglue.Request) error {
 		"transfers":           response,
 		"general_queue_count": generalQueueCount,
 		"team_queue_counts":   teamCounts,
+		"total_count":         totalCount,
+		"limit":               limit,
+		"offset":              offset,
 	})
 }
 

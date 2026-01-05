@@ -216,8 +216,14 @@ export const chatbotService = {
   getSession: (id: string) => api.get(`/chatbot/sessions/${id}`),
 
   // Agent Transfers
-  listTransfers: (params?: { status?: string; agent_id?: string }) =>
-    api.get('/chatbot/transfers', { params }),
+  listTransfers: (params?: {
+    status?: string
+    agent_id?: string
+    team_id?: string
+    limit?: number
+    offset?: number
+    include?: string // 'all' | 'contact,agent,team' etc.
+  }) => api.get('/chatbot/transfers', { params }),
   createTransfer: (data: {
     contact_id: string
     whatsapp_account: string

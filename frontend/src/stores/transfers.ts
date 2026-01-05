@@ -74,6 +74,13 @@ export const useTransfersStore = defineStore('transfers', () => {
   const isLoading = ref(false)
   const lastSyncedAt = ref<number>(0) // Timestamp of last WebSocket sync
 
+  // History (resumed transfers) - separate state for pagination
+  const historyTransfers = ref<AgentTransfer[]>([])
+  const historyTotalCount = ref(0)
+  const historyOffset = ref(0)
+  const historyLimit = ref(20)
+  const isLoadingHistory = ref(false)
+
   // Total queue count (general + all teams)
   const queueCount = computed(() => {
     const teamTotal = Object.values(teamQueueCounts.value).reduce((sum, count) => sum + count, 0)
@@ -100,19 +107,100 @@ export const useTransfersStore = defineStore('transfers', () => {
     return transfers.value.find(t => t.contact_id === contactId && t.status === 'active')
   }
 
-  async function fetchTransfers(params?: { status?: string }) {
+  // Pagination state
+  const totalCount = ref(0)
+  const currentLimit = ref(100)
+  const currentOffset = ref(0)
+
+  async function fetchTransfers(params?: {
+    status?: string
+    limit?: number
+    offset?: number
+    include?: string
+    append?: boolean // If true, append to existing list instead of replacing
+  }) {
     isLoading.value = true
     try {
       const response = await chatbotService.listTransfers(params)
       const data = response.data.data || response.data
-      transfers.value = data.transfers || []
+
+      if (params?.append && params.offset) {
+        // Append for pagination
+        transfers.value = [...transfers.value, ...(data.transfers || [])]
+      } else {
+        transfers.value = data.transfers || []
+      }
+
       generalQueueCount.value = data.general_queue_count ?? 0
       teamQueueCounts.value = data.team_queue_counts ?? {}
+      totalCount.value = data.total_count ?? transfers.value.length
+      currentLimit.value = data.limit ?? 100
+      currentOffset.value = data.offset ?? 0
     } catch (error) {
       console.error('Failed to fetch transfers:', error)
     } finally {
       isLoading.value = false
     }
+  }
+
+  // Check if more transfers are available
+  const hasMoreTransfers = computed(() =>
+    currentOffset.value + currentLimit.value < totalCount.value
+  )
+
+  // Load more transfers (pagination)
+  async function loadMoreTransfers() {
+    if (!hasMoreTransfers.value || isLoading.value) return
+
+    await fetchTransfers({
+      status: 'active',
+      offset: currentOffset.value + currentLimit.value,
+      limit: currentLimit.value,
+      append: true
+    })
+  }
+
+  // Fetch transfer history (resumed transfers) with pagination
+  async function fetchHistory(params?: { limit?: number; offset?: number; append?: boolean }) {
+    isLoadingHistory.value = true
+    try {
+      const response = await chatbotService.listTransfers({
+        status: 'resumed',
+        limit: params?.limit ?? historyLimit.value,
+        offset: params?.offset ?? 0,
+        include: 'contact,agent,team,resumed_by' // Skip transferred_by for history
+      })
+      const data = response.data.data || response.data
+
+      if (params?.append && params.offset) {
+        historyTransfers.value = [...historyTransfers.value, ...(data.transfers || [])]
+      } else {
+        historyTransfers.value = data.transfers || []
+      }
+
+      historyTotalCount.value = data.total_count ?? historyTransfers.value.length
+      historyOffset.value = data.offset ?? 0
+    } catch (error) {
+      console.error('Failed to fetch transfer history:', error)
+    } finally {
+      isLoadingHistory.value = false
+    }
+  }
+
+  // Check if more history is available
+  const hasMoreHistory = computed(() =>
+    historyOffset.value + historyLimit.value < historyTotalCount.value
+  )
+
+  // Load more history (pagination)
+  async function loadMoreHistory() {
+    if (!hasMoreHistory.value || isLoadingHistory.value) return
+
+    await fetchHistory({
+      offset: historyOffset.value + historyLimit.value,
+      limit: historyLimit.value,
+      append: true
+    })
   }
 
   function addTransfer(transfer: AgentTransfer) {
@@ -217,7 +305,19 @@ export const useTransfersStore = defineStore('transfers', () => {
     activeTransfers,
     myTransfers,
     unassignedCount,
+    // Pagination
+    totalCount,
+    hasMoreTransfers,
     fetchTransfers,
+    loadMoreTransfers,
+    // History
+    historyTransfers,
+    historyTotalCount,
+    isLoadingHistory,
+    hasMoreHistory,
+    fetchHistory,
+    loadMoreHistory,
+    // CRUD
     addTransfer,
     updateTransfer,
     removeTransfer,
