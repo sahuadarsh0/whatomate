@@ -86,6 +86,11 @@ func (p *SLAProcessor) processOrganizationSLA(settings models.ChatbotSettings, n
 	if settings.SLAResponseMinutes > 0 {
 		p.markSLABreached(orgID, settings, now)
 	}
+
+	// 4. Handle client inactivity (reminders and auto-close)
+	if settings.ClientReminderEnabled {
+		p.processClientInactivity(orgID, settings, now)
+	}
 }
 
 // autoCloseExpiredTransfers closes transfers that have exceeded their expiry time
@@ -386,4 +391,247 @@ func (a *App) UpdateSLAOnFirstResponse(transfer *models.AgentTransfer) {
 
 	now := time.Now()
 	transfer.FirstResponseAt = &now
+}
+
+// processClientInactivity handles client inactivity reminders and auto-close for chatbot conversations only
+func (p *SLAProcessor) processClientInactivity(orgID uuid.UUID, settings models.ChatbotSettings, now time.Time) {
+	// Find contacts where chatbot has sent a message and is waiting for client response
+	var contacts []models.Contact
+	if err := p.app.DB.Where(
+		"organization_id = ? AND chatbot_last_message_at IS NOT NULL",
+		orgID,
+	).Find(&contacts).Error; err != nil {
+		p.app.Log.Error("Failed to find contacts for client inactivity check", "error", err, "org_id", orgID)
+		return
+	}
+
+	for _, contact := range contacts {
+		// Skip if contact has an active agent transfer
+		if p.app.hasActiveAgentTransfer(orgID, contact.ID) {
+			continue
+		}
+
+		// Skip if client has replied after chatbot's last message
+		if contact.LastMessageAt != nil && contact.ChatbotLastMessageAt != nil {
+			if contact.LastMessageAt.After(*contact.ChatbotLastMessageAt) {
+				continue
+			}
+		}
+
+		// Calculate time since chatbot's last message
+		timeSinceChatbotMsg := now.Sub(*contact.ChatbotLastMessageAt)
+
+		// Check if we should auto-close (takes precedence over reminder)
+		if settings.ClientAutoCloseMinutes > 0 {
+			autoCloseThreshold := time.Duration(settings.ClientAutoCloseMinutes) * time.Minute
+			if timeSinceChatbotMsg >= autoCloseThreshold {
+				p.autoCloseChatbotSession(contact, settings, now)
+				continue
+			}
+		}
+
+		// Check if we should send reminder
+		if settings.ClientReminderMinutes > 0 && !contact.ChatbotReminderSent {
+			reminderThreshold := time.Duration(settings.ClientReminderMinutes) * time.Minute
+			if timeSinceChatbotMsg >= reminderThreshold {
+				p.sendChatbotReminder(contact, settings, now)
+			}
+		}
+	}
+}
+
+// sendChatbotReminder sends a reminder message to an inactive client during chatbot conversation
+func (p *SLAProcessor) sendChatbotReminder(contact models.Contact, settings models.ChatbotSettings, now time.Time) {
+	if settings.ClientReminderMessage == "" {
+		return
+	}
+
+	// Get WhatsApp account
+	var account models.WhatsAppAccount
+	if err := p.app.DB.Where("name = ?", contact.WhatsAppAccount).First(&account).Error; err != nil {
+		p.app.Log.Error("Failed to load WhatsApp account for chatbot reminder", "error", err)
+		return
+	}
+
+	waAccount := &whatsapp.Account{
+		PhoneID:     account.PhoneID,
+		BusinessID:  account.BusinessID,
+		APIVersion:  account.APIVersion,
+		AccessToken: account.AccessToken,
+	}
+
+	// Send reminder message
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	wamid, err := p.app.WhatsApp.SendTextMessage(ctx, waAccount, contact.PhoneNumber, settings.ClientReminderMessage)
+
+	// Save message to database
+	msg := models.Message{
+		OrganizationID:  account.OrganizationID,
+		WhatsAppAccount: account.Name,
+		ContactID:       contact.ID,
+		Direction:       "outgoing",
+		MessageType:     "text",
+		Content:         settings.ClientReminderMessage,
+		Status:          "sent",
+	}
+	if err != nil {
+		msg.Status = "failed"
+		msg.ErrorMessage = err.Error()
+		p.app.Log.Error("Failed to send chatbot reminder message", "error", err, "phone", contact.PhoneNumber)
+	} else if wamid != "" {
+		msg.WhatsAppMessageID = wamid
+	}
+
+	if dbErr := p.app.DB.Create(&msg).Error; dbErr != nil {
+		p.app.Log.Error("Failed to save chatbot reminder message", "error", dbErr)
+	}
+
+	// Broadcast via WebSocket
+	if p.app.WSHub != nil {
+		var assignedUserIDStr string
+		if contact.AssignedUserID != nil {
+			assignedUserIDStr = contact.AssignedUserID.String()
+		}
+		p.app.WSHub.BroadcastToOrg(account.OrganizationID, websocket.WSMessage{
+			Type: websocket.TypeNewMessage,
+			Payload: map[string]any{
+				"id":               msg.ID,
+				"contact_id":       contact.ID.String(),
+				"assigned_user_id": assignedUserIDStr,
+				"profile_name":     contact.ProfileName,
+				"direction":        msg.Direction,
+				"message_type":     msg.MessageType,
+				"content":          map[string]string{"body": msg.Content},
+				"status":           msg.Status,
+				"wamid":            msg.WhatsAppMessageID,
+				"created_at":       msg.CreatedAt,
+				"updated_at":       msg.UpdatedAt,
+			},
+		})
+	}
+
+	if err != nil {
+		return
+	}
+
+	// Mark reminder as sent
+	if err := p.app.DB.Model(&contact).Update("chatbot_reminder_sent", true).Error; err != nil {
+		p.app.Log.Error("Failed to update chatbot_reminder_sent", "error", err, "contact_id", contact.ID)
+	}
+
+	p.app.Log.Info("Chatbot reminder sent",
+		"contact_id", contact.ID,
+		"phone", contact.PhoneNumber,
+		"inactive_since", contact.ChatbotLastMessageAt,
+	)
+}
+
+// autoCloseChatbotSession closes a chatbot session due to client inactivity
+func (p *SLAProcessor) autoCloseChatbotSession(contact models.Contact, settings models.ChatbotSettings, now time.Time) {
+	// Save the timestamp before clearing for logging
+	var inactiveSince time.Time
+	if contact.ChatbotLastMessageAt != nil {
+		inactiveSince = *contact.ChatbotLastMessageAt
+	}
+
+	// Send auto-close message if configured
+	if settings.ClientAutoCloseMessage != "" {
+		var account models.WhatsAppAccount
+		if err := p.app.DB.Where("name = ?", contact.WhatsAppAccount).First(&account).Error; err == nil {
+			waAccount := &whatsapp.Account{
+				PhoneID:     account.PhoneID,
+				BusinessID:  account.BusinessID,
+				APIVersion:  account.APIVersion,
+				AccessToken: account.AccessToken,
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			wamid, err := p.app.WhatsApp.SendTextMessage(ctx, waAccount, contact.PhoneNumber, settings.ClientAutoCloseMessage)
+			cancel()
+
+			// Save message to database
+			msg := models.Message{
+				OrganizationID:  account.OrganizationID,
+				WhatsAppAccount: account.Name,
+				ContactID:       contact.ID,
+				Direction:       "outgoing",
+				MessageType:     "text",
+				Content:         settings.ClientAutoCloseMessage,
+				Status:          "sent",
+			}
+			if err != nil {
+				msg.Status = "failed"
+				msg.ErrorMessage = err.Error()
+				p.app.Log.Error("Failed to send chatbot auto-close message", "error", err, "phone", contact.PhoneNumber)
+			} else if wamid != "" {
+				msg.WhatsAppMessageID = wamid
+			}
+
+			if dbErr := p.app.DB.Create(&msg).Error; dbErr != nil {
+				p.app.Log.Error("Failed to save chatbot auto-close message", "error", dbErr)
+			}
+
+			// Broadcast via WebSocket
+			if p.app.WSHub != nil {
+				var assignedUserIDStr string
+				if contact.AssignedUserID != nil {
+					assignedUserIDStr = contact.AssignedUserID.String()
+				}
+				p.app.WSHub.BroadcastToOrg(account.OrganizationID, websocket.WSMessage{
+					Type: websocket.TypeNewMessage,
+					Payload: map[string]any{
+						"id":               msg.ID,
+						"contact_id":       contact.ID.String(),
+						"assigned_user_id": assignedUserIDStr,
+						"profile_name":     contact.ProfileName,
+						"direction":        msg.Direction,
+						"message_type":     msg.MessageType,
+						"content":          map[string]string{"body": msg.Content},
+						"status":           msg.Status,
+						"wamid":            msg.WhatsAppMessageID,
+						"created_at":       msg.CreatedAt,
+						"updated_at":       msg.UpdatedAt,
+					},
+				})
+			}
+		}
+	}
+
+	// Clear chatbot tracking fields to close the session
+	if err := p.app.DB.Model(&contact).Updates(map[string]interface{}{
+		"chatbot_last_message_at": nil,
+		"chatbot_reminder_sent":   false,
+	}).Error; err != nil {
+		p.app.Log.Error("Failed to close chatbot session for client inactivity", "error", err, "contact_id", contact.ID)
+		return
+	}
+
+	p.app.Log.Info("Chatbot session closed due to client inactivity",
+		"contact_id", contact.ID,
+		"phone", contact.PhoneNumber,
+		"inactive_since", inactiveSince,
+	)
+}
+
+// UpdateContactChatbotMessage updates the chatbot last message timestamp for a contact
+func (a *App) UpdateContactChatbotMessage(contactID uuid.UUID) {
+	now := time.Now()
+	a.DB.Model(&models.Contact{}).
+		Where("id = ?", contactID).
+		Updates(map[string]interface{}{
+			"chatbot_last_message_at": now,
+			"chatbot_reminder_sent":   false, // Reset reminder when chatbot sends a new message
+		})
+}
+
+// ClearContactChatbotTracking clears chatbot tracking when client replies or is transferred
+func (a *App) ClearContactChatbotTracking(contactID uuid.UUID) {
+	a.DB.Model(&models.Contact{}).
+		Where("id = ?", contactID).
+		Updates(map[string]interface{}{
+			"chatbot_last_message_at": nil,
+			"chatbot_reminder_sent":   false,
+		})
 }

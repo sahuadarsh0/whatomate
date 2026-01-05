@@ -283,6 +283,9 @@ func (a *App) processIncomingMessageFull(phoneNumberID string, msg IncomingTextM
 	}
 	a.saveIncomingMessage(&account, contact, msg.ID, messageType, messageText, mediaInfo, replyToWAMID)
 
+	// Clear chatbot tracking since client has replied
+	a.ClearContactChatbotTracking(contact.ID)
+
 	// Check for active agent transfer - skip chatbot processing if transferred
 	if a.hasActiveAgentTransfer(account.OrganizationID, contact.ID) {
 		a.Log.Info("Contact has active agent transfer, skipping chatbot processing",
@@ -601,6 +604,11 @@ func (a *App) sendAndSaveTextMessage(account *models.WhatsAppAccount, contact *m
 		a.Log.Error("Failed to save chatbot message", "error", dbErr)
 	}
 
+	// Track chatbot message for client inactivity SLA
+	if err == nil {
+		a.UpdateContactChatbotMessage(contact.ID)
+	}
+
 	// Broadcast via WebSocket
 	if a.WSHub != nil {
 		var assignedUserIDStr string
@@ -673,6 +681,11 @@ func (a *App) sendAndSaveInteractiveButtons(account *models.WhatsAppAccount, con
 
 	if dbErr := a.DB.Create(&msg).Error; dbErr != nil {
 		a.Log.Error("Failed to save chatbot interactive message", "error", dbErr)
+	}
+
+	// Track chatbot message for client inactivity SLA
+	if err == nil {
+		a.UpdateContactChatbotMessage(contact.ID)
 	}
 
 	// Broadcast via WebSocket
@@ -939,6 +952,68 @@ func (a *App) processFlowResponse(account *models.WhatsAppAccount, session *mode
 		}
 	}
 
+	// Auto-validate button responses when step expects button/select input
+	// Only validate if InputType is button/select, or if buttons are configured and user clicked a button
+	shouldValidateButtons := len(currentStep.Buttons) > 0 &&
+		(currentStep.InputType == "button" || currentStep.InputType == "select" || buttonID != "")
+
+	if shouldValidateButtons {
+		isValidButton := false
+		userInputLower := strings.ToLower(userInput)
+
+		// Check if buttonID or userInput matches any configured button
+		for i, btn := range currentStep.Buttons {
+			if btnMap, ok := btn.(map[string]interface{}); ok {
+				btnID, _ := btnMap["id"].(string)
+				btnTitle, _ := btnMap["title"].(string)
+
+				// Auto-generate ID if not set (must match what sendInteractiveButtons does)
+				if btnID == "" {
+					btnID = fmt.Sprintf("btn_%d", i+1)
+				}
+
+				// Match by buttonID (exact match) or by title (case-insensitive)
+				if buttonID != "" && buttonID == btnID {
+					isValidButton = true
+					break
+				}
+				if strings.ToLower(btnTitle) == userInputLower || btnID == userInput {
+					isValidButton = true
+					// Set buttonID if not already set (user typed the button text)
+					if buttonID == "" {
+						buttonID = btnID
+					}
+					break
+				}
+			}
+		}
+
+		if !isValidButton {
+			// Invalid button selection
+			session.StepRetries++
+			a.Log.Debug("Invalid button selection", "buttonID", buttonID, "userInput", userInput, "step", currentStep.StepName, "retries", session.StepRetries)
+			a.DB.Model(session).Update("step_retries", session.StepRetries)
+
+			maxRetries := currentStep.MaxRetries
+			if maxRetries == 0 {
+				maxRetries = 3 // Default max retries
+			}
+
+			if session.StepRetries >= maxRetries {
+				// Max retries exceeded - exit flow and close conversation
+				a.Log.Warn("Max button retries exceeded, closing conversation", "step", currentStep.StepName)
+				a.sendAndSaveTextMessage(account, contact, "Sorry, we couldn't continue. Please try again later.")
+				a.exitFlow(session)
+				a.closeSession(session)
+				return
+			}
+
+			// Resend the step message with buttons
+			a.sendStepMessage(account, session, contact, currentStep)
+			return
+		}
+	}
+
 	// Store the user's response (use buttonID if available, otherwise userInput)
 	if currentStep.StoreAs != "" {
 		sessionData := session.SessionData
@@ -1142,6 +1217,17 @@ func (a *App) exitFlow(session *models.ChatbotSession) {
 		"current_step":    "",
 		"step_retries":    0,
 	})
+}
+
+// closeSession ends the chatbot session and clears contact tracking
+func (a *App) closeSession(session *models.ChatbotSession) {
+	a.DB.Model(session).Updates(map[string]interface{}{
+		"status":       "completed",
+		"completed_at": time.Now(),
+	})
+
+	// Clear chatbot tracking on contact
+	a.ClearContactChatbotTracking(session.ContactID)
 }
 
 // replaceVariables replaces {{variable}} placeholders with session data values

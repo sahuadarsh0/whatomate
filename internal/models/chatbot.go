@@ -25,7 +25,7 @@ type ChatbotSettings struct {
 	AssignToSameAgent          bool       `gorm:"default:true" json:"assign_to_same_agent"`          // Auto-assign transfers to contact's existing agent
 	AgentCurrentConversationOnly bool     `gorm:"default:false" json:"agent_current_conversation_only"` // Agents see only current session messages
 
-	// SLA Settings
+	// SLA Settings (Agent)
 	SLAEnabled             bool `gorm:"default:false" json:"sla_enabled"`                  // Enable SLA tracking
 	SLAResponseMinutes     int  `gorm:"default:15" json:"sla_response_minutes"`            // Time to pick up transfer (default 15 min)
 	SLAResolutionMinutes   int  `gorm:"default:60" json:"sla_resolution_minutes"`          // Time to resolve transfer (default 60 min)
@@ -34,6 +34,13 @@ type ChatbotSettings struct {
 	SLAAutoCloseMessage    string `gorm:"type:text" json:"sla_auto_close_message"`         // Message to customer when chat is auto-closed
 	SLAWarningMessage      string `gorm:"type:text" json:"sla_warning_message"`            // Message to customer when SLA breached
 	SLAEscalationNotifyIDs StringArray `gorm:"type:jsonb;default:'[]'" json:"sla_escalation_notify_ids"` // User IDs to notify on escalation
+
+	// Client Inactivity Settings
+	ClientReminderEnabled  bool   `gorm:"default:false" json:"client_reminder_enabled"`     // Enable client inactivity reminders
+	ClientReminderMinutes  int    `gorm:"default:30" json:"client_reminder_minutes"`        // Send reminder after X minutes of client inactivity
+	ClientReminderMessage  string `gorm:"type:text" json:"client_reminder_message"`         // Reminder message to client
+	ClientAutoCloseMinutes int    `gorm:"default:60" json:"client_auto_close_minutes"`      // Auto-close after Y minutes of client inactivity
+	ClientAutoCloseMessage string `gorm:"type:text" json:"client_auto_close_message"`       // Message when closing due to client inactivity
 
 	AIEnabled            bool        `gorm:"column:ai_enabled;default:false" json:"ai_enabled"`
 	AIProvider           string      `gorm:"column:ai_provider;size:20" json:"ai_provider"` // openai, anthropic, google

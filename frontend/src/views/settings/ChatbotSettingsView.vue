@@ -135,7 +135,19 @@ const slaSettings = ref({
   sla_auto_close_hours: 24,
   sla_auto_close_message: '',
   sla_warning_message: '',
-  sla_escalation_notify_ids: [] as string[]
+  sla_escalation_notify_ids: [] as string[],
+  // Client inactivity settings
+  client_reminder_enabled: false,
+  client_reminder_minutes: 30,
+  client_reminder_message: '',
+  client_auto_close_minutes: 60,
+  client_auto_close_message: ''
+})
+
+const isClientReminderEnabled = ref(false)
+
+watch(isClientReminderEnabled, (newValue) => {
+  slaSettings.value.client_reminder_enabled = newValue
 })
 
 const isSLAEnabled = ref(false)
@@ -210,6 +222,8 @@ onMounted(async () => {
 
       const slaEnabledValue = chatbotData.settings.sla_enabled === true
       isSLAEnabled.value = slaEnabledValue
+      const clientReminderEnabledValue = chatbotData.settings.client_reminder_enabled === true
+      isClientReminderEnabled.value = clientReminderEnabledValue
       slaSettings.value = {
         sla_enabled: slaEnabledValue,
         sla_response_minutes: chatbotData.settings.sla_response_minutes || 15,
@@ -218,7 +232,12 @@ onMounted(async () => {
         sla_auto_close_hours: chatbotData.settings.sla_auto_close_hours || 24,
         sla_auto_close_message: chatbotData.settings.sla_auto_close_message || '',
         sla_warning_message: chatbotData.settings.sla_warning_message || '',
-        sla_escalation_notify_ids: chatbotData.settings.sla_escalation_notify_ids || []
+        sla_escalation_notify_ids: chatbotData.settings.sla_escalation_notify_ids || [],
+        client_reminder_enabled: clientReminderEnabledValue,
+        client_reminder_minutes: chatbotData.settings.client_reminder_minutes || 30,
+        client_reminder_message: chatbotData.settings.client_reminder_message || '',
+        client_auto_close_minutes: chatbotData.settings.client_auto_close_minutes || 60,
+        client_auto_close_message: chatbotData.settings.client_auto_close_message || ''
       }
     }
   } catch (error) {
@@ -324,7 +343,12 @@ async function saveSLASettings() {
       sla_auto_close_hours: slaSettings.value.sla_auto_close_hours,
       sla_auto_close_message: slaSettings.value.sla_auto_close_message,
       sla_warning_message: slaSettings.value.sla_warning_message,
-      sla_escalation_notify_ids: slaSettings.value.sla_escalation_notify_ids
+      sla_escalation_notify_ids: slaSettings.value.sla_escalation_notify_ids,
+      client_reminder_enabled: slaSettings.value.client_reminder_enabled,
+      client_reminder_minutes: slaSettings.value.client_reminder_minutes,
+      client_reminder_message: slaSettings.value.client_reminder_message,
+      client_auto_close_minutes: slaSettings.value.client_auto_close_minutes,
+      client_auto_close_message: slaSettings.value.client_auto_close_message
     })
     toast.success('SLA settings saved')
   } catch (error) {
@@ -767,6 +791,55 @@ function removeEscalationUser(userId: string) {
                       </div>
                     </div>
                     <p v-else class="text-sm text-muted-foreground italic">No users selected</p>
+                  </div>
+                </div>
+
+                <Separator class="my-6" />
+
+                <!-- Client Inactivity Settings (Chatbot Only) -->
+                <div class="space-y-4">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <p class="font-medium">Client Inactivity Reminders</p>
+                      <p class="text-sm text-muted-foreground">Send reminders to clients who don't respond to chatbot messages</p>
+                    </div>
+                    <Switch
+                      :checked="isClientReminderEnabled"
+                      @update:checked="(val: boolean) => isClientReminderEnabled = val"
+                    />
+                  </div>
+
+                  <div v-if="isClientReminderEnabled" class="space-y-4 pt-2">
+                    <div class="grid grid-cols-2 gap-4">
+                      <div class="space-y-2">
+                        <Label>Reminder After (minutes)</Label>
+                        <Input v-model.number="slaSettings.client_reminder_minutes" type="number" min="1" max="1440" />
+                        <p class="text-xs text-muted-foreground">Time before sending reminder</p>
+                      </div>
+                      <div class="space-y-2">
+                        <Label>Auto-Close After (minutes)</Label>
+                        <Input v-model.number="slaSettings.client_auto_close_minutes" type="number" min="1" max="1440" />
+                        <p class="text-xs text-muted-foreground">Time before closing session</p>
+                      </div>
+                    </div>
+
+                    <div class="space-y-2">
+                      <Label>Reminder Message</Label>
+                      <Textarea
+                        v-model="slaSettings.client_reminder_message"
+                        placeholder="Hi! We noticed you haven't replied. Is there anything else we can help you with?"
+                        :rows="2"
+                      />
+                    </div>
+
+                    <div class="space-y-2">
+                      <Label>Auto-Close Message</Label>
+                      <Textarea
+                        v-model="slaSettings.client_auto_close_message"
+                        placeholder="This conversation has been closed due to inactivity. Feel free to message us again!"
+                        :rows="2"
+                      />
+                    </div>
                   </div>
                 </div>
 

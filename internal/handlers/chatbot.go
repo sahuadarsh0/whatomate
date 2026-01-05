@@ -40,6 +40,12 @@ type ChatbotSettingsResponse struct {
 	SLAAutoCloseMessage    string   `json:"sla_auto_close_message"`
 	SLAWarningMessage      string   `json:"sla_warning_message"`
 	SLAEscalationNotifyIDs []string `json:"sla_escalation_notify_ids"`
+	// Client Inactivity Settings (Chatbot Only)
+	ClientReminderEnabled  bool   `json:"client_reminder_enabled"`
+	ClientReminderMinutes  int    `json:"client_reminder_minutes"`
+	ClientReminderMessage  string `json:"client_reminder_message"`
+	ClientAutoCloseMinutes int    `json:"client_auto_close_minutes"`
+	ClientAutoCloseMessage string `json:"client_auto_close_message"`
 }
 
 // ChatbotStatsResponse represents chatbot statistics
@@ -170,6 +176,12 @@ func (a *App) GetChatbotSettings(r *fastglue.Request) error {
 		SLAAutoCloseMessage:    settings.SLAAutoCloseMessage,
 		SLAWarningMessage:      settings.SLAWarningMessage,
 		SLAEscalationNotifyIDs: settings.SLAEscalationNotifyIDs,
+		// Client Inactivity Settings
+		ClientReminderEnabled:  settings.ClientReminderEnabled,
+		ClientReminderMinutes:  settings.ClientReminderMinutes,
+		ClientReminderMessage:  settings.ClientReminderMessage,
+		ClientAutoCloseMinutes: settings.ClientAutoCloseMinutes,
+		ClientAutoCloseMessage: settings.ClientAutoCloseMessage,
 	}
 
 	return r.SendEnvelope(map[string]interface{}{
@@ -214,6 +226,12 @@ func (a *App) UpdateChatbotSettings(r *fastglue.Request) error {
 		SLAAutoCloseMessage    *string   `json:"sla_auto_close_message"`
 		SLAWarningMessage      *string   `json:"sla_warning_message"`
 		SLAEscalationNotifyIDs *[]string `json:"sla_escalation_notify_ids"`
+		// Client Inactivity Settings
+		ClientReminderEnabled  *bool   `json:"client_reminder_enabled"`
+		ClientReminderMinutes  *int    `json:"client_reminder_minutes"`
+		ClientReminderMessage  *string `json:"client_reminder_message"`
+		ClientAutoCloseMinutes *int    `json:"client_auto_close_minutes"`
+		ClientAutoCloseMessage *string `json:"client_auto_close_message"`
 	}
 
 	if err := json.Unmarshal(r.RequestCtx.PostBody(), &req); err != nil {
@@ -326,6 +344,23 @@ func (a *App) UpdateChatbotSettings(r *fastglue.Request) error {
 	}
 	if req.SLAEscalationNotifyIDs != nil {
 		settings.SLAEscalationNotifyIDs = *req.SLAEscalationNotifyIDs
+	}
+
+	// Client Inactivity Settings
+	if req.ClientReminderEnabled != nil {
+		settings.ClientReminderEnabled = *req.ClientReminderEnabled
+	}
+	if req.ClientReminderMinutes != nil {
+		settings.ClientReminderMinutes = *req.ClientReminderMinutes
+	}
+	if req.ClientReminderMessage != nil {
+		settings.ClientReminderMessage = *req.ClientReminderMessage
+	}
+	if req.ClientAutoCloseMinutes != nil {
+		settings.ClientAutoCloseMinutes = *req.ClientAutoCloseMinutes
+	}
+	if req.ClientAutoCloseMessage != nil {
+		settings.ClientAutoCloseMessage = *req.ClientAutoCloseMessage
 	}
 
 	if err := a.DB.Save(&settings).Error; err != nil {
