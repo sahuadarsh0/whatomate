@@ -142,6 +142,63 @@ func (c *Client) SendInteractiveButtons(ctx context.Context, account *Account, p
 	return messageID, nil
 }
 
+// SendCTAURLButton sends an interactive message with a CTA URL button
+// This opens a URL when clicked instead of sending a reply
+func (c *Client) SendCTAURLButton(ctx context.Context, account *Account, phoneNumber, bodyText, buttonText, url string) (string, error) {
+	if buttonText == "" || url == "" {
+		return "", fmt.Errorf("button text and URL are required")
+	}
+
+	// Truncate button text to 20 chars (WhatsApp limit)
+	if len(buttonText) > 20 {
+		buttonText = buttonText[:20]
+	}
+
+	interactive := map[string]interface{}{
+		"type": "cta_url",
+		"body": map[string]interface{}{
+			"text": bodyText,
+		},
+		"action": map[string]interface{}{
+			"name": "cta_url",
+			"parameters": map[string]interface{}{
+				"display_text": buttonText,
+				"url":          url,
+			},
+		},
+	}
+
+	payload := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"to":                phoneNumber,
+		"type":              "interactive",
+		"interactive":       interactive,
+	}
+
+	apiURL := c.buildMessagesURL(account)
+	c.Log.Debug("Sending CTA URL button message", "phone", phoneNumber, "url", url)
+
+	respBody, err := c.doRequest(ctx, "POST", apiURL, payload, account.AccessToken)
+	if err != nil {
+		c.Log.Error("Failed to send CTA URL button message", "error", err, "phone", phoneNumber)
+		return "", fmt.Errorf("failed to send CTA URL button message: %w", err)
+	}
+
+	var resp MetaAPIResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if len(resp.Messages) == 0 {
+		return "", fmt.Errorf("no message ID in response")
+	}
+
+	messageID := resp.Messages[0].ID
+	c.Log.Info("CTA URL button message sent", "message_id", messageID, "phone", phoneNumber)
+	return messageID, nil
+}
+
 // TemplateParam represents a parameter for template message
 type TemplateParam struct {
 	Type  string `json:"type"`

@@ -739,6 +739,79 @@ func (a *App) sendInteractiveButtons(account *models.WhatsAppAccount, to, bodyTe
 	return a.WhatsApp.SendInteractiveButtons(ctx, waAccount, to, bodyText, waButtons)
 }
 
+// sendAndSaveCTAURLButton sends a CTA URL button message and saves it to the database
+func (a *App) sendAndSaveCTAURLButton(account *models.WhatsAppAccount, contact *models.Contact, bodyText, buttonText, url string) error {
+	waAccount := &whatsapp.Account{
+		PhoneID:     account.PhoneID,
+		BusinessID:  account.BusinessID,
+		APIVersion:  account.APIVersion,
+		AccessToken: account.AccessToken,
+	}
+	ctx := context.Background()
+	wamid, err := a.WhatsApp.SendCTAURLButton(ctx, waAccount, contact.PhoneNumber, bodyText, buttonText, url)
+
+	// Create message record with interactive data
+	interactiveData := models.JSONB{
+		"type":        "cta_url",
+		"body":        bodyText,
+		"button_text": buttonText,
+		"url":         url,
+	}
+
+	msg := models.Message{
+		OrganizationID:  account.OrganizationID,
+		WhatsAppAccount: account.Name,
+		ContactID:       contact.ID,
+		Direction:       "outgoing",
+		MessageType:     "interactive",
+		Content:         bodyText,
+		InteractiveData: interactiveData,
+		Status:          "sent",
+	}
+	if err != nil {
+		msg.Status = "failed"
+		msg.ErrorMessage = err.Error()
+	} else if wamid != "" {
+		msg.WhatsAppMessageID = wamid
+	}
+
+	if dbErr := a.DB.Create(&msg).Error; dbErr != nil {
+		a.Log.Error("Failed to save chatbot CTA URL message", "error", dbErr)
+	}
+
+	// Track chatbot message for client inactivity SLA
+	if err == nil {
+		a.UpdateContactChatbotMessage(contact.ID)
+	}
+
+	// Broadcast via WebSocket
+	if a.WSHub != nil {
+		var assignedUserIDStr string
+		if contact.AssignedUserID != nil {
+			assignedUserIDStr = contact.AssignedUserID.String()
+		}
+		a.WSHub.BroadcastToOrg(account.OrganizationID, websocket.WSMessage{
+			Type: websocket.TypeNewMessage,
+			Payload: map[string]any{
+				"id":               msg.ID,
+				"contact_id":       contact.ID.String(),
+				"assigned_user_id": assignedUserIDStr,
+				"profile_name":     contact.ProfileName,
+				"direction":        msg.Direction,
+				"message_type":     msg.MessageType,
+				"content":          map[string]string{"body": msg.Content},
+				"interactive_data": msg.InteractiveData,
+				"status":           msg.Status,
+				"wamid":            msg.WhatsAppMessageID,
+				"created_at":       msg.CreatedAt,
+				"updated_at":       msg.UpdatedAt,
+			},
+		})
+	}
+
+	return err
+}
+
 // getOrCreateContact finds or creates a contact for the phone number
 // Returns the contact and a boolean indicating if the contact was newly created
 func (a *App) getOrCreateContact(orgID uuid.UUID, phoneNumber, profileName string) (*models.Contact, bool) {
@@ -1386,14 +1459,46 @@ func (a *App) sendStepMessage(account *models.WhatsAppAccount, session *models.C
 		// Send interactive buttons message
 		message = processTemplate(step.Message, session.SessionData)
 		if len(step.Buttons) > 0 {
-			// Convert JSONBArray to []map[string]interface{}
-			buttons := make([]map[string]interface{}, 0, len(step.Buttons))
+			// Separate reply buttons from URL buttons
+			// WhatsApp doesn't allow mixing them in the same message
+			replyButtons := make([]map[string]interface{}, 0)
+			urlButtons := make([]map[string]interface{}, 0)
+
 			for _, btn := range step.Buttons {
 				if btnMap, ok := btn.(map[string]interface{}); ok {
-					buttons = append(buttons, btnMap)
+					btnType, _ := btnMap["type"].(string)
+					if btnType == "url" {
+						urlButtons = append(urlButtons, btnMap)
+					} else {
+						// Default to reply button
+						replyButtons = append(replyButtons, btnMap)
+					}
 				}
 			}
-			a.sendAndSaveInteractiveButtons(account, contact, message, buttons)
+
+			// Send reply buttons first (with the main message)
+			if len(replyButtons) > 0 {
+				a.sendAndSaveInteractiveButtons(account, contact, message, replyButtons)
+			} else if len(urlButtons) == 0 {
+				// No buttons at all, fall back to text
+				a.sendAndSaveTextMessage(account, contact, message)
+			}
+
+			// Send URL buttons as separate CTA URL messages
+			// WhatsApp only allows one CTA URL button per message
+			for _, urlBtn := range urlButtons {
+				btnTitle, _ := urlBtn["title"].(string)
+				btnURL, _ := urlBtn["url"].(string)
+				if btnTitle != "" && btnURL != "" {
+					// Use empty body for subsequent URL buttons, or use message if no reply buttons
+					bodyText := ""
+					if len(replyButtons) == 0 {
+						bodyText = message
+						message = "" // Clear so we don't repeat it
+					}
+					a.sendAndSaveCTAURLButton(account, contact, bodyText, btnTitle, btnURL)
+				}
+			}
 		} else {
 			// No buttons configured, fall back to text
 			a.sendAndSaveTextMessage(account, contact, message)

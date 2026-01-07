@@ -105,6 +105,18 @@ const router = createRouter({
           meta: { roles: ['admin', 'manager'] }
         },
         {
+          path: 'chatbot/flows/new',
+          name: 'chatbot-flow-new',
+          component: () => import('@/views/chatbot/ChatbotFlowBuilderView.vue'),
+          meta: { roles: ['admin', 'manager'] }
+        },
+        {
+          path: 'chatbot/flows/:id/edit',
+          name: 'chatbot-flow-edit',
+          component: () => import('@/views/chatbot/ChatbotFlowBuilderView.vue'),
+          meta: { roles: ['admin', 'manager'] }
+        },
+        {
           path: 'chatbot/ai',
           name: 'chatbot-ai',
           component: () => import('@/views/chatbot/AIContextsView.vue'),
