@@ -1,5 +1,8 @@
-# Whatomate Configuration Example
+# Whatomate Configuration
 # Copy this to config.toml and update values
+#
+# For Docker: use "db" and "redis" as hostnames
+# For local dev: use "localhost"
 
 [app]
 name = "Whatomate"
@@ -11,13 +14,13 @@ host = "0.0.0.0"
 port = 8080
 read_timeout = 30
 write_timeout = 30
-base_path = ""  # Set to "/subpath" if behind nginx proxy pass (e.g., "/whatomate")
+base_path = ""  # Set to "/subpath" if behind nginx proxy pass
 
 [database]
-host = "localhost"
+host = "db"  # Use "localhost" for local development
 port = 5432
 user = "whatomate"
-password = "whatomate123"
+password = "whatomate"
 name = "whatomate"
 ssl_mode = "disable"
 max_open_conns = 25
@@ -25,7 +28,7 @@ max_idle_conns = 5
 conn_max_lifetime = 300
 
 [redis]
-host = "localhost"
+host = "redis"  # Use "localhost" for local development
 port = 6379
 password = ""
 db = 0
